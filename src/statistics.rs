@@ -9,9 +9,12 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::SymbolContextResult;
-
 const BYTES_PER_ESTIMATED_TOKEN: i64 = 4;
+
+/// Human-readable explanation of how the reported numbers are derived.
+pub const STATISTICS_NOTE: &str =
+    "Estimates. 'avoided' = source bytes/lines of the files a request \
+consulted minus the response returned to the model; token savings assume ~4 bytes per token.";
 
 /// Source measurements used by the statistics collectors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -30,29 +33,25 @@ impl SourceMetrics {
         }
     }
 
-    /// Adds one returned source fragment to the aggregate response size.
+    /// Adds one source fragment to the aggregate size.
     pub fn add_source(&mut self, source: &str) {
         let metrics = Self::from_source(source);
         self.bytes = self.bytes.saturating_add(metrics.bytes);
         self.lines = self.lines.saturating_add(metrics.lines);
     }
+}
 
-    /// Measures all source fragments returned by `read_symbol_context`.
-    #[must_use]
-    pub fn from_context(context: &SymbolContextResult) -> Self {
-        let mut metrics = Self::default();
-        metrics.add_source(&context.requested_symbol.source);
-        for symbol in &context.helper_functions {
-            metrics.add_source(&symbol.source);
-        }
-        for symbol in &context.local_types {
-            metrics.add_source(&symbol.source);
-        }
-        for symbol in &context.local_constants {
-            metrics.add_source(&symbol.source);
-        }
-        metrics
-    }
+/// One recorded request: the source the model would otherwise have read versus
+/// the compact response it actually received.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestSample {
+    /// Aggregate size of the distinct source files the request consulted.
+    pub original: SourceMetrics,
+    /// Size of the serialized response returned to the model.
+    pub returned: SourceMetrics,
+    /// Number of distinct files the request answered from without the model
+    /// having to read them.
+    pub files: u64,
 }
 
 /// JSON/MCP representation of one statistics scope.
@@ -64,7 +63,7 @@ pub struct StatisticsSnapshot {
     pub bytes_avoided: i64,
     /// Approximation using four source bytes per token; never model-specific.
     pub estimated_token_savings: i64,
-    /// Percentage, not a fraction. This value is explicitly an estimate.
+    /// Size-weighted percentage across all requests. Explicitly an estimate.
     pub average_context_reduction_percent: f64,
 }
 
@@ -73,6 +72,8 @@ pub struct StatisticsSnapshot {
 pub struct StatisticsReport {
     pub session: StatisticsSnapshot,
     pub lifetime: StatisticsSnapshot,
+    /// How to read the numbers above.
+    pub note: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -81,7 +82,7 @@ struct SessionAccumulator {
     files_avoided: u64,
     lines_avoided: i64,
     bytes_avoided: i64,
-    total_reduction_percent: f64,
+    total_original_bytes: i64,
 }
 
 /// Session-only statistics. It deliberately has no persistence or background work.
@@ -92,20 +93,24 @@ pub struct SessionStatistics {
 
 impl SessionStatistics {
     /// Records one successful semantic request.
-    pub fn record(&self, original: SourceMetrics, returned: SourceMetrics) {
+    pub fn record(&self, sample: RequestSample) {
         let mut accumulator = self
             .accumulator
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         accumulator.successful_requests = accumulator.successful_requests.saturating_add(1);
-        accumulator.files_avoided = accumulator.files_avoided.saturating_add(1);
-        accumulator.lines_avoided = accumulator
-            .lines_avoided
-            .saturating_add(signed_difference(original.lines, returned.lines));
-        accumulator.bytes_avoided = accumulator
-            .bytes_avoided
-            .saturating_add(signed_difference(original.bytes, returned.bytes));
-        accumulator.total_reduction_percent += reduction_percent(original.bytes, returned.bytes);
+        accumulator.files_avoided = accumulator.files_avoided.saturating_add(sample.files);
+        accumulator.lines_avoided = accumulator.lines_avoided.saturating_add(signed_difference(
+            sample.original.lines,
+            sample.returned.lines,
+        ));
+        accumulator.bytes_avoided = accumulator.bytes_avoided.saturating_add(signed_difference(
+            sample.original.bytes,
+            sample.returned.bytes,
+        ));
+        accumulator.total_original_bytes = accumulator
+            .total_original_bytes
+            .saturating_add(as_i64(sample.original.bytes));
     }
 
     /// Returns a consistent point-in-time snapshot.
@@ -121,9 +126,9 @@ impl SessionStatistics {
             lines_avoided: accumulator.lines_avoided,
             bytes_avoided: accumulator.bytes_avoided,
             estimated_token_savings: accumulator.bytes_avoided / BYTES_PER_ESTIMATED_TOKEN,
-            average_context_reduction_percent: average_reduction(
-                accumulator.total_reduction_percent,
-                accumulator.successful_requests,
+            average_context_reduction_percent: weighted_reduction(
+                accumulator.bytes_avoided,
+                accumulator.total_original_bytes,
             ),
         }
     }
@@ -131,50 +136,49 @@ impl SessionStatistics {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct LifetimeAccumulator {
+    successful_requests: u64,
     files_avoided: u64,
     lines_avoided: i64,
     bytes_avoided: i64,
-    estimated_tokens_avoided: i64,
-    average_reduction_percent: f64,
+    total_original_bytes: i64,
 }
 
 impl LifetimeAccumulator {
-    #[allow(clippy::cast_precision_loss)]
-    fn record(&mut self, original: SourceMetrics, returned: SourceMetrics) {
-        let reduction = reduction_percent(original.bytes, returned.bytes);
-        let previous_requests = self.files_avoided;
-        self.files_avoided = self.files_avoided.saturating_add(1);
-        self.lines_avoided = self
-            .lines_avoided
-            .saturating_add(signed_difference(original.lines, returned.lines));
-        self.bytes_avoided = self
-            .bytes_avoided
-            .saturating_add(signed_difference(original.bytes, returned.bytes));
-        self.estimated_tokens_avoided = self.estimated_tokens_avoided.saturating_add(
-            signed_difference(original.bytes, returned.bytes) / BYTES_PER_ESTIMATED_TOKEN,
-        );
-        self.average_reduction_percent = if self.files_avoided == 0 {
-            0.0
-        } else {
-            ((self.average_reduction_percent * previous_requests as f64) + reduction)
-                / self.files_avoided as f64
-        };
+    fn record(&mut self, sample: RequestSample) {
+        self.successful_requests = self.successful_requests.saturating_add(1);
+        self.files_avoided = self.files_avoided.saturating_add(sample.files);
+        self.lines_avoided = self.lines_avoided.saturating_add(signed_difference(
+            sample.original.lines,
+            sample.returned.lines,
+        ));
+        self.bytes_avoided = self.bytes_avoided.saturating_add(signed_difference(
+            sample.original.bytes,
+            sample.returned.bytes,
+        ));
+        self.total_original_bytes = self
+            .total_original_bytes
+            .saturating_add(as_i64(sample.original.bytes));
     }
 
     fn snapshot(self) -> StatisticsSnapshot {
         StatisticsSnapshot {
-            successful_requests: self.files_avoided,
+            successful_requests: self.successful_requests,
             files_avoided: self.files_avoided,
             lines_avoided: self.lines_avoided,
             bytes_avoided: self.bytes_avoided,
-            estimated_token_savings: self.estimated_tokens_avoided,
-            average_context_reduction_percent: self.average_reduction_percent,
+            estimated_token_savings: self.bytes_avoided / BYTES_PER_ESTIMATED_TOKEN,
+            average_context_reduction_percent: weighted_reduction(
+                self.bytes_avoided,
+                self.total_original_bytes,
+            ),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedLifetimeStatistics {
+    #[serde(rename = "successfulRequests", default)]
+    successful_requests: u64,
     #[serde(rename = "filesAvoided")]
     files_avoided: u64,
     #[serde(rename = "linesAvoided")]
@@ -183,6 +187,8 @@ struct PersistedLifetimeStatistics {
     bytes_avoided: i64,
     #[serde(rename = "estimatedTokensAvoided")]
     estimated_tokens_avoided: i64,
+    #[serde(rename = "totalOriginalBytes", default)]
+    total_original_bytes: i64,
     #[serde(rename = "averageReduction")]
     average_reduction: f64,
 }
@@ -190,27 +196,47 @@ struct PersistedLifetimeStatistics {
 impl From<LifetimeAccumulator> for PersistedLifetimeStatistics {
     fn from(accumulator: LifetimeAccumulator) -> Self {
         Self {
+            successful_requests: accumulator.successful_requests,
             files_avoided: accumulator.files_avoided,
             lines_avoided: accumulator.lines_avoided,
             bytes_avoided: accumulator.bytes_avoided,
-            estimated_tokens_avoided: accumulator.estimated_tokens_avoided,
-            average_reduction: accumulator.average_reduction_percent,
+            estimated_tokens_avoided: accumulator.bytes_avoided / BYTES_PER_ESTIMATED_TOKEN,
+            total_original_bytes: accumulator.total_original_bytes,
+            average_reduction: weighted_reduction(
+                accumulator.bytes_avoided,
+                accumulator.total_original_bytes,
+            ),
         }
     }
 }
 
 impl From<PersistedLifetimeStatistics> for LifetimeAccumulator {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn from(persisted: PersistedLifetimeStatistics) -> Self {
+        // Legacy files stored only an average percentage; reconstruct a
+        // consistent byte baseline so the weighted average stays continuous.
+        let total_original_bytes = if persisted.total_original_bytes > 0 {
+            persisted.total_original_bytes
+        } else if persisted.average_reduction.is_finite() && persisted.average_reduction > 0.0 {
+            ((persisted.bytes_avoided as f64) / (persisted.average_reduction / 100.0)) as i64
+        } else {
+            0
+        };
+        let successful_requests = if persisted.successful_requests > 0 {
+            persisted.successful_requests
+        } else {
+            persisted.files_avoided
+        };
         Self {
+            successful_requests,
             files_avoided: persisted.files_avoided,
             lines_avoided: persisted.lines_avoided,
             bytes_avoided: persisted.bytes_avoided,
-            estimated_tokens_avoided: persisted.estimated_tokens_avoided,
-            average_reduction_percent: if persisted.average_reduction.is_finite() {
-                persisted.average_reduction
-            } else {
-                0.0
-            },
+            total_original_bytes,
         }
     }
 }
@@ -250,7 +276,7 @@ impl LifetimeStatistics {
             Some(path) => load_from_path(path),
             None => (LifetimeAccumulator::default(), false),
         };
-        let last_persisted_request_count = accumulator.files_avoided;
+        let last_persisted_request_count = accumulator.successful_requests;
         Self {
             accumulator: Mutex::new(accumulator),
             persistence: Mutex::new(PersistenceState {
@@ -262,16 +288,19 @@ impl LifetimeStatistics {
     }
 
     /// Records and persists one successful semantic request.
-    pub fn record(&self, original: SourceMetrics, returned: SourceMetrics) {
-        let (snapshot, request_count) = {
+    pub fn record(&self, sample: RequestSample) {
+        let (persisted, request_count) = {
             let mut accumulator = self
                 .accumulator
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            accumulator.record(original, returned);
-            (accumulator.snapshot(), accumulator.files_avoided)
+            accumulator.record(sample);
+            (
+                PersistedLifetimeStatistics::from(*accumulator),
+                accumulator.successful_requests,
+            )
         };
-        self.persist(snapshot, request_count, false);
+        self.persist(&persisted, request_count, false);
     }
 
     /// Returns a consistent point-in-time lifetime snapshot.
@@ -285,18 +314,18 @@ impl LifetimeStatistics {
 
     /// Resets lifetime counters and persists the zeroed aggregate when possible.
     pub fn reset(&self) {
-        let snapshot = {
+        let persisted = {
             let mut accumulator = self
                 .accumulator
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *accumulator = LifetimeAccumulator::default();
-            accumulator.snapshot()
+            PersistedLifetimeStatistics::from(*accumulator)
         };
-        self.persist(snapshot, 0, true);
+        self.persist(&persisted, 0, true);
     }
 
-    fn persist(&self, snapshot: StatisticsSnapshot, request_count: u64, force: bool) {
+    fn persist(&self, persisted: &PersistedLifetimeStatistics, request_count: u64, force: bool) {
         let mut persistence = self
             .persistence
             .lock()
@@ -318,14 +347,7 @@ impl LifetimeStatistics {
             persistence.enabled = false;
             return;
         }
-        let persisted = PersistedLifetimeStatistics {
-            files_avoided: snapshot.files_avoided,
-            lines_avoided: snapshot.lines_avoided,
-            bytes_avoided: snapshot.bytes_avoided,
-            estimated_tokens_avoided: snapshot.estimated_token_savings,
-            average_reduction: snapshot.average_context_reduction_percent,
-        };
-        let Ok(contents) = serde_json::to_string_pretty(&persisted) else {
+        let Ok(contents) = serde_json::to_string_pretty(persisted) else {
             persistence.enabled = false;
             return;
         };
@@ -380,28 +402,19 @@ fn default_statistics_path() -> Option<PathBuf> {
 }
 
 fn signed_difference(original: u64, returned: u64) -> i64 {
-    let original = i64::try_from(original).unwrap_or(i64::MAX);
-    let returned = i64::try_from(returned).unwrap_or(i64::MAX);
-    original.saturating_sub(returned)
+    as_i64(original).saturating_sub(as_i64(returned))
+}
+
+fn as_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn reduction_percent(original_bytes: u64, returned_bytes: u64) -> f64 {
-    if original_bytes == 0 {
+fn weighted_reduction(bytes_avoided: i64, total_original_bytes: i64) -> f64 {
+    if total_original_bytes <= 0 {
         return 0.0;
     }
-    let original_bytes = original_bytes as f64;
-    let returned_bytes = returned_bytes as f64;
-    ((original_bytes - returned_bytes) / original_bytes) * 100.0
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn average_reduction(total_reduction_percent: f64, request_count: u64) -> f64 {
-    if request_count == 0 {
-        0.0
-    } else {
-        total_reduction_percent / request_count as f64
-    }
+    (bytes_avoided as f64 / total_original_bytes as f64) * 100.0
 }
 
 #[cfg(test)]
@@ -413,9 +426,29 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{LifetimeStatistics, SessionStatistics, SourceMetrics};
+    use super::{LifetimeStatistics, RequestSample, SessionStatistics, SourceMetrics};
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn sample(
+        original_bytes: u64,
+        original_lines: u64,
+        returned_bytes: u64,
+        returned_lines: u64,
+        files: u64,
+    ) -> RequestSample {
+        RequestSample {
+            original: SourceMetrics {
+                bytes: original_bytes,
+                lines: original_lines,
+            },
+            returned: SourceMetrics {
+                bytes: returned_bytes,
+                lines: returned_lines,
+            },
+            files,
+        }
+    }
 
     fn temporary_statistics_path() -> PathBuf {
         let sequence = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
@@ -430,36 +463,28 @@ mod tests {
     }
 
     #[test]
-    fn records_session_aggregate_avoidance_and_average_reduction() {
+    fn records_session_aggregate_avoidance_and_weighted_reduction() {
         let statistics = SessionStatistics::default();
-        statistics.record(
-            SourceMetrics {
-                bytes: 100,
-                lines: 20,
-            },
-            SourceMetrics {
-                bytes: 20,
-                lines: 5,
-            },
-        );
-        statistics.record(
-            SourceMetrics {
-                bytes: 200,
-                lines: 40,
-            },
-            SourceMetrics {
-                bytes: 100,
-                lines: 20,
-            },
-        );
+        statistics.record(sample(100, 20, 20, 5, 1));
+        statistics.record(sample(200, 40, 100, 20, 1));
 
+        assert_eq!(statistics.snapshot().successful_requests, 2);
         assert_eq!(statistics.snapshot().files_avoided, 2);
         assert_eq!(statistics.snapshot().lines_avoided, 35);
         assert_eq!(statistics.snapshot().bytes_avoided, 180);
         assert_eq!(statistics.snapshot().estimated_token_savings, 45);
+        // Size-weighted: 180 avoided out of 300 original = 60%.
         assert!(
-            (statistics.snapshot().average_context_reduction_percent - 65.0).abs() < f64::EPSILON
+            (statistics.snapshot().average_context_reduction_percent - 60.0).abs() < f64::EPSILON
         );
+    }
+
+    #[test]
+    fn counts_distinct_files_separately_from_requests() {
+        let statistics = SessionStatistics::default();
+        statistics.record(sample(500, 100, 50, 10, 7));
+        assert_eq!(statistics.snapshot().successful_requests, 1);
+        assert_eq!(statistics.snapshot().files_avoided, 7);
     }
 
     #[test]
@@ -478,27 +503,24 @@ mod tests {
     fn lifetime_statistics_survive_reload_and_reset() {
         let path = temporary_statistics_path();
         let statistics = LifetimeStatistics::from_path(path.clone());
-        statistics.record(
-            SourceMetrics {
-                bytes: 100,
-                lines: 20,
-            },
-            SourceMetrics {
-                bytes: 20,
-                lines: 5,
-            },
-        );
+        statistics.record(sample(100, 20, 20, 5, 1));
         let persisted = fs::read_to_string(&path).expect("statistics should be persisted");
         assert!(persisted.contains("filesAvoided"));
+        assert!(persisted.contains("successfulRequests"));
+        assert!(persisted.contains("totalOriginalBytes"));
         assert!(persisted.contains("estimatedTokensAvoided"));
 
         let loaded = LifetimeStatistics::from_path(path.clone());
+        assert_eq!(loaded.snapshot().successful_requests, 1);
         assert_eq!(loaded.snapshot().files_avoided, 1);
         assert_eq!(loaded.snapshot().bytes_avoided, 80);
         assert_eq!(loaded.snapshot().estimated_token_savings, 20);
+        // 80 of 100 original bytes.
+        assert!((loaded.snapshot().average_context_reduction_percent - 80.0).abs() < f64::EPSILON);
 
         loaded.reset();
         let reset = LifetimeStatistics::from_path(path.clone());
+        assert_eq!(reset.snapshot().successful_requests, 0);
         assert_eq!(reset.snapshot().files_avoided, 0);
         assert_eq!(reset.snapshot().bytes_avoided, 0);
         let _ = fs::remove_file(path);
@@ -509,16 +531,7 @@ mod tests {
         let path = temporary_statistics_path();
         fs::write(&path, "not-json").expect("test statistics file should be writable");
         let statistics = LifetimeStatistics::from_path(path.clone());
-        statistics.record(
-            SourceMetrics {
-                bytes: 100,
-                lines: 20,
-            },
-            SourceMetrics {
-                bytes: 20,
-                lines: 5,
-            },
-        );
+        statistics.record(sample(100, 20, 20, 5, 1));
         assert_eq!(statistics.snapshot().files_avoided, 1);
         assert_eq!(
             fs::read_to_string(&path).expect("file should remain readable"),

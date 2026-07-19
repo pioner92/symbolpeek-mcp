@@ -9,7 +9,9 @@ use crate::{
     filesystem::{self, FileSystemSourceLoader, SourceLoader},
     language::LanguageRegistry,
     mcp,
-    statistics::{LifetimeStatistics, SessionStatistics, SourceMetrics, StatisticsReport},
+    statistics::{
+        LifetimeStatistics, RequestSample, SessionStatistics, SourceMetrics, StatisticsReport,
+    },
     types::{
         CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
         DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineResult,
@@ -94,30 +96,94 @@ impl SymbolPeekServer {
         Ok((file, parsed))
     }
 
-    fn record_read_symbol(&self, file: &filesystem::SourceFile, result: &ReadSymbolResult) {
-        self.record_metrics(
-            SourceMetrics::from_source(&file.source),
-            SourceMetrics::from_source(&result.source),
-        );
-    }
+    /// Records one request against both statistics scopes.
+    ///
+    /// `returned` is the size of the actual serialized response the model
+    /// receives; `original` is the aggregate size of every distinct source file
+    /// the request answered from (the primary file plus any files referenced in
+    /// the result). This is what the model would otherwise have had to read.
+    fn record_request<T: serde::Serialize>(
+        &self,
+        primary: Option<&filesystem::SourceFile>,
+        result: &T,
+    ) {
+        let value = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
 
-    fn record_context(&self, file: &filesystem::SourceFile, result: &SymbolContextResult) {
-        self.record_metrics(
-            SourceMetrics::from_source(&file.source),
-            SourceMetrics::from_context(result),
-        );
-    }
+        let mut files = std::collections::BTreeSet::new();
+        collect_files(&value, &mut files);
+        if let Some(primary) = primary {
+            files.insert(primary.path.clone());
+        }
 
-    fn record_metadata_only(&self, file: &filesystem::SourceFile) {
-        self.record_metrics(
-            SourceMetrics::from_source(&file.source),
-            SourceMetrics::default(),
-        );
-    }
+        // Measure the compact payload minus `"file"` path pointers: paths are
+        // boilerplate (and counted separately as files_avoided), not source
+        // content the model would otherwise have read. Compact form keeps the
+        // metric independent of display indentation and checkout path length.
+        let response = serde_json::to_string(&strip_file_keys(&value)).unwrap_or_default();
+        let returned = SourceMetrics::from_source(&response);
 
-    fn record_metrics(&self, original: SourceMetrics, returned: SourceMetrics) {
-        self.statistics.record(original, returned);
-        self.lifetime_statistics.record(original, returned);
+        let mut original = SourceMetrics::default();
+        for path in &files {
+            match primary {
+                Some(primary) if *path == primary.path => original.add_source(&primary.source),
+                _ => {
+                    if let Ok(source) = std::fs::read_to_string(path) {
+                        original.add_source(&source);
+                    }
+                }
+            }
+        }
+
+        let sample = RequestSample {
+            original,
+            returned,
+            files: u64::try_from(files.len().max(1)).unwrap_or(u64::MAX),
+        };
+        self.statistics.record(sample);
+        self.lifetime_statistics.record(sample);
+    }
+}
+
+/// Returns a copy of the value with every `"file"` key removed, used to measure
+/// response content size without repeated path boilerplate.
+fn strip_file_keys(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .filter(|(key, _)| key.as_str() != "file")
+                .map(|(key, child)| (key.clone(), strip_file_keys(child)))
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(strip_file_keys).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Collects every distinct source path referenced under a `"file"` key anywhere
+/// in a serialized result, so navigation results credit all files avoided.
+fn collect_files(
+    value: &serde_json::Value,
+    out: &mut std::collections::BTreeSet<std::path::PathBuf>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "file" {
+                    if let serde_json::Value::String(path) = child {
+                        out.insert(std::path::PathBuf::from(path));
+                    }
+                }
+                collect_files(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_files(item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -145,7 +211,7 @@ impl SymbolPeekServer {
         let result: ReadSymbolResult = parsed
             .read_symbol(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_read_symbol(&file, &result);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -161,7 +227,7 @@ impl SymbolPeekServer {
             .parse_file(&request.path)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ListSymbolsResult = parsed.list_symbols(&file);
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -181,7 +247,7 @@ impl SymbolPeekServer {
         let result: DependencyResult = parsed
             .find_dependencies(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -201,7 +267,7 @@ impl SymbolPeekServer {
         let result: ReferencesResult = parsed
             .find_references(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -221,7 +287,7 @@ impl SymbolPeekServer {
         let result: CallersResult = parsed
             .find_callers(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -241,7 +307,7 @@ impl SymbolPeekServer {
         let result: DefinitionResult = parsed
             .go_to_definition(&file, request.line, request.column)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -261,7 +327,7 @@ impl SymbolPeekServer {
         let result: SymbolContextResult = parsed
             .read_context(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_context(&file, &result);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -289,6 +355,7 @@ impl SymbolPeekServer {
         let result: SearchSymbolsResult = adapter
             .search_symbols(&normalized)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
+        self.record_request(None, &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -308,7 +375,7 @@ impl SymbolPeekServer {
         let result: ImplementationsResult = parsed
             .find_implementations(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -328,7 +395,7 @@ impl SymbolPeekServer {
         let result: TypeInfoResult = parsed
             .get_type(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -348,7 +415,7 @@ impl SymbolPeekServer {
         let result: DocumentOutlineResult = parsed
             .get_document_outline(&file)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -368,7 +435,7 @@ impl SymbolPeekServer {
         let result: CalleesResult = parsed
             .find_callees(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -394,7 +461,7 @@ impl SymbolPeekServer {
         let result: DiagnosticsResult = adapter
             .diagnostics(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -414,7 +481,7 @@ impl SymbolPeekServer {
         let result: CallHierarchyResult = parsed
             .get_call_hierarchy(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_metadata_only(&file);
+        self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
 
@@ -425,6 +492,7 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&StatisticsReport {
             session: self.statistics.snapshot(),
             lifetime: self.lifetime_statistics.snapshot(),
+            note: crate::statistics::STATISTICS_NOTE,
         }))
     }
 }
@@ -457,6 +525,12 @@ fn print_lifetime_statistics(snapshot: crate::statistics::StatisticsSnapshot, us
     );
     println!("{}", paint(rule, "2;37", use_color));
     println!();
+    print_metric(
+        "Requests:",
+        &format_unsigned(snapshot.successful_requests),
+        use_color,
+        LABEL_WIDTH,
+    );
     print_metric(
         "Files avoided:",
         &format_unsigned(snapshot.files_avoided),
