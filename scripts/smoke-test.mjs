@@ -7,9 +7,12 @@ import { constants } from "node:fs";
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const binary = process.argv[2]
   ? resolve(process.argv[2])
-  : resolve(projectRoot, "target/release/codescope");
+  : resolve(projectRoot, "target/release/symbolpeek");
 const fixture = resolve(process.argv[3] ?? resolve(projectRoot, "tests/fixtures/sample.tsx"));
-const statisticsPath = resolve(projectRoot, "target/codescope-smoke-stats.json");
+const navigationRoot = resolve(projectRoot, "tests/fixtures/navigation");
+const contractsFixture = resolve(navigationRoot, "contracts.ts");
+const diagnosticsFixture = resolve(navigationRoot, "diagnostics.ts");
+const statisticsPath = resolve(projectRoot, "target/symbolpeek-smoke-stats.json");
 
 await access(binary, constants.X_OK);
 await access(fixture, constants.R_OK);
@@ -19,8 +22,8 @@ const child = spawn(binary, [], {
   cwd: projectRoot,
   env: {
     ...process.env,
-    CODESCOPE_TYPESCRIPT_ROOT: projectRoot,
-    CODESCOPE_STATS_PATH: statisticsPath,
+    SYMBOLPEEK_TYPESCRIPT_ROOT: projectRoot,
+    SYMBOLPEEK_STATS_PATH: statisticsPath,
   },
   stdio: ["pipe", "pipe", "pipe"],
 });
@@ -91,13 +94,29 @@ try {
   await request("initialize", {
     protocolVersion: "2025-06-18",
     capabilities: {},
-    clientInfo: { name: "codescope-release-smoke-test", version: "1.0.0" },
+    clientInfo: { name: "symbolpeek-release-smoke-test", version: "1.0.0" },
   });
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
   const tools = await request("tools/list", {});
   const toolNames = tools.result.tools.map((tool) => tool.name);
-  const requiredTools = ["read_symbol", "list_symbols", "find_dependencies", "read_symbol_context", "get_statistics"];
+  const requiredTools = [
+    "read_symbol",
+    "list_symbols",
+    "find_dependencies",
+    "find_references",
+    "find_callers",
+    "go_to_definition",
+    "read_symbol_context",
+    "search_symbols",
+    "get_type",
+    "find_implementations",
+    "get_document_outline",
+    "find_callees",
+    "get_diagnostics",
+    "get_call_hierarchy",
+    "get_statistics",
+  ];
   for (const name of requiredTools) {
     if (!toolNames.includes(name)) throw new Error(`Missing MCP tool: ${name}`);
   }
@@ -120,11 +139,92 @@ try {
     throw new Error("read_symbol_context did not return sendMessage");
   }
 
+  const references = await request("tools/call", {
+    name: "find_references",
+    arguments: { path: fixture, symbol: "sendMessage" },
+  });
+  if (references.result.isError || !(references.result.structuredContent?.references?.length > 0)) {
+    throw new Error("find_references did not return sendMessage references");
+  }
+
+  const callers = await request("tools/call", {
+    name: "find_callers",
+    arguments: { path: fixture, symbol: "sendMessage" },
+  });
+  if (callers.result.isError || !(callers.result.structuredContent?.callers?.length > 0)) {
+    throw new Error("find_callers did not return sendMessage callers");
+  }
+
+  const definition = await request("tools/call", {
+    name: "go_to_definition",
+    arguments: { path: fixture, line: 37, column: 31 },
+  });
+  if (definition.result.isError || !definition.result.structuredContent?.definition) {
+    throw new Error("go_to_definition did not resolve sendMessage");
+  }
+
+  const search = await request("tools/call", {
+    name: "search_symbols",
+    arguments: { path: navigationRoot, query: "useAuth" },
+  });
+  if (search.result.isError || !(search.result.structuredContent?.symbols?.length > 0)) {
+    throw new Error("search_symbols did not return workspace matches");
+  }
+
+  const typeInfo = await request("tools/call", {
+    name: "get_type",
+    arguments: { path: fixture, line: 15, column: 8 },
+  });
+  if (typeInfo.result.isError || !typeInfo.result.structuredContent?.display) {
+    throw new Error("get_type did not return hover information");
+  }
+
+  const implementations = await request("tools/call", {
+    name: "find_implementations",
+    arguments: { path: contractsFixture, symbol: "Repository" },
+  });
+  if (implementations.result.isError
+    || !(implementations.result.structuredContent?.implementations?.length >= 2)) {
+    throw new Error("find_implementations did not return contract implementations");
+  }
+
+  const outline = await request("tools/call", {
+    name: "get_document_outline",
+    arguments: { path: fixture },
+  });
+  if (outline.result.isError || !(outline.result.structuredContent?.symbols?.length > 0)) {
+    throw new Error("get_document_outline did not return symbols");
+  }
+
+  const callees = await request("tools/call", {
+    name: "find_callees",
+    arguments: { path: fixture, symbol: "sendMessage" },
+  });
+  if (callees.result.isError || !(callees.result.structuredContent?.callees?.length > 0)) {
+    throw new Error("find_callees did not return project callees");
+  }
+
+  const diagnostics = await request("tools/call", {
+    name: "get_diagnostics",
+    arguments: { path: diagnosticsFixture },
+  });
+  if (diagnostics.result.isError || !(diagnostics.result.structuredContent?.diagnostics?.length > 0)) {
+    throw new Error("get_diagnostics did not return compiler diagnostics");
+  }
+
+  const hierarchy = await request("tools/call", {
+    name: "get_call_hierarchy",
+    arguments: { path: fixture, symbol: "sendMessage", depth: 2 },
+  });
+  if (hierarchy.result.isError || !(hierarchy.result.structuredContent?.nodes?.length > 0)) {
+    throw new Error("get_call_hierarchy did not return call graph nodes");
+  }
+
   const statistics = await request("tools/call", {
     name: "get_statistics",
     arguments: {},
   });
-  if (statistics.result.isError || statistics.result.structuredContent?.session?.successful_requests !== 2) {
+  if (statistics.result.isError || statistics.result.structuredContent?.session?.successful_requests !== 11) {
     throw new Error("get_statistics did not report the successful semantic requests");
   }
 

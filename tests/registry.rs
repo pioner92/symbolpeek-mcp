@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use codescope::{
-    errors::CodeScopeError,
+use symbolpeek::{
+    errors::SymbolPeekError,
     filesystem::SourceFile,
     language::{LanguageAdapter, LanguageRegistry, ParsedFile, RegistryError},
 };
@@ -25,8 +25,8 @@ impl LanguageAdapter for FakeProvider {
             })
     }
 
-    fn parse(&self, file: &SourceFile) -> Result<Box<dyn ParsedFile>, CodeScopeError> {
-        Err(CodeScopeError::Parse {
+    fn parse(&self, file: &SourceFile) -> Result<Box<dyn ParsedFile>, SymbolPeekError> {
+        Err(SymbolPeekError::Parse {
             path: file.path.clone(),
             message: "fake provider".to_owned(),
         })

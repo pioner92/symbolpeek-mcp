@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
-use codescope::{
-    errors::CodeScopeError,
+use symbolpeek::{
+    errors::SymbolPeekError,
     filesystem::{is_supported, SourceFile},
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
 };
@@ -42,11 +42,11 @@ fn lists_only_top_level_symbols_with_ast_kinds() {
     );
     assert_eq!(
         result.symbols[4].kind,
-        codescope::types::SymbolKind::ReactComponent
+        symbolpeek::types::SymbolKind::ReactComponent
     );
     assert_eq!(
         result.symbols[1].kind,
-        codescope::types::SymbolKind::Constant
+        symbolpeek::types::SymbolKind::Constant
     );
 }
 
@@ -121,5 +121,5 @@ fn reports_compiler_diagnostics_as_parse_errors() {
     let Err(error) = TypeScriptAdapter.parse(&file) else {
         panic!("invalid syntax should fail parsing");
     };
-    assert!(matches!(error, CodeScopeError::Parse { .. }));
+    assert!(matches!(error, SymbolPeekError::Parse { .. }));
 }

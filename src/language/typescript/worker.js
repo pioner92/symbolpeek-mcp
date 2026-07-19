@@ -1,7 +1,15 @@
 const fs = require("node:fs");
+const path = require("node:path");
 const ts = require("typescript");
 
 const request = JSON.parse(fs.readFileSync(0, "utf8"));
+const isWorkspaceOperation = request.operation === "search_symbols";
+const workspaceRoot = path.resolve(
+  request.workspace_root || (isWorkspaceOperation ? request.path : path.dirname(request.path)),
+);
+const currentFileName = isWorkspaceOperation
+  ? path.join(workspaceRoot, "__symbolpeek_workspace__.ts")
+  : path.resolve(request.path);
 const scriptKind = {
   ts: ts.ScriptKind.TS,
   tsx: ts.ScriptKind.TSX,
@@ -9,20 +17,22 @@ const scriptKind = {
   jsx: ts.ScriptKind.JSX,
 }[request.extension];
 
-if (scriptKind === undefined) {
+if (!isWorkspaceOperation && scriptKind === undefined) {
   process.stderr.write(`unsupported extension: ${request.extension}`);
   process.exit(2);
 }
 
-const sourceFile = ts.createSourceFile(
-  request.path,
-  request.source,
-  ts.ScriptTarget.Latest,
-  true,
-  scriptKind,
-);
+const sourceFile = isWorkspaceOperation
+  ? undefined
+  : ts.createSourceFile(
+    currentFileName,
+    request.source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind,
+  );
 
-if (sourceFile.parseDiagnostics.length > 0) {
+if (sourceFile && sourceFile.parseDiagnostics.length > 0 && request.operation !== "get_diagnostics") {
   const message = sourceFile.parseDiagnostics
     .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
     .join("; ");
@@ -125,6 +135,9 @@ function addDefinition(name, node, nameNode, kind, category, scope, topLevel) {
     end: nodeSpan.end,
     name_start: nameSpan.start,
     name_end: nameSpan.end,
+    name_utf16_start: nameNode
+      ? nameNode.getStart(sourceFile)
+      : node.getStart(sourceFile),
     top_level: topLevel,
     scope,
     node,
@@ -159,14 +172,21 @@ function visit(node, scope, topLevel, parent) {
   if (ts.isVariableStatement(node)) {
     const isConst = (node.declarationList.flags & ts.NodeFlags.Const) !== 0;
     for (const declaration of node.declarationList.declarations) {
-      for (const entry of declarationNames(declaration.name)) {
-        const initializer = declaration.initializer;
+      const initializer = declaration.initializer;
+      const entries = declarationNames(declaration.name);
+      for (const entry of entries) {
         const classification = variableKind(entry.name, initializer, isConst);
         const kind = classification.kind;
         const category = classification.category;
         const symbolNode = node.declarationList.declarations.length === 1 ? node : declaration;
         addDefinition(entry.name, symbolNode, entry.node, kind, category, scope, topLevel);
-        if (initializer) visit(initializer, [...scope, entry.name], false, declaration);
+      }
+      // Visit the initializer once per declaration, not once per binding: a
+      // destructuring pattern has no single owner, so nesting under each binding
+      // would duplicate every inner symbol. Single binding still nests by name.
+      if (initializer) {
+        const initializerScope = entries.length === 1 ? [...scope, entries[0].name] : scope;
+        visit(initializer, initializerScope, false, declaration);
       }
       if (declaration.type) visit(declaration.type, scope, false, declaration);
     }
@@ -241,7 +261,7 @@ function visit(node, scope, topLevel, parent) {
   visitChildren(node, scope, topLevel);
 }
 
-visitChildren(sourceFile, [], true);
+if (sourceFile) visitChildren(sourceFile, [], true);
 
 function definitionForReference(name, scope) {
   for (let length = scope.length; length >= 0; length -= 1) {
@@ -323,8 +343,720 @@ function dependenciesFor(definition) {
   return [...dependencies];
 }
 
+function scriptKindForFile(fileName) {
+  const extension = path.extname(fileName).slice(1).toLowerCase();
+  return {
+    ts: ts.ScriptKind.TS,
+    tsx: ts.ScriptKind.TSX,
+    js: ts.ScriptKind.JS,
+    jsx: ts.ScriptKind.JSX,
+  }[extension];
+}
+
+function isSupportedSource(fileName) {
+  return scriptKindForFile(fileName) !== undefined
+    && !fileName.split(path.sep).includes("node_modules");
+}
+
+function projectLanguageService() {
+  const defaultOptions = {
+    allowJs: true,
+    checkJs: false,
+    jsx: ts.JsxEmit.Preserve,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  let compilerOptions = defaultOptions;
+  let rootNames = [];
+  const configPath = ts.findConfigFile(
+    workspaceRoot,
+    ts.sys.fileExists,
+    "tsconfig.json",
+  );
+  if (configPath) {
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    if (!config.error) {
+      const parsed = ts.parseJsonConfigFileContent(
+        config.config,
+        ts.sys,
+        path.dirname(configPath),
+      );
+      compilerOptions = { ...defaultOptions, ...parsed.options, allowJs: true };
+      rootNames = parsed.fileNames;
+    }
+  }
+
+  const sourceTexts = new Map();
+  if (!isWorkspaceOperation) sourceTexts.set(currentFileName, request.source);
+  const scriptFileNames = new Set(rootNames.map((fileName) => path.resolve(fileName)));
+  if (!isWorkspaceOperation) scriptFileNames.add(currentFileName);
+
+  function sourceTextFor(fileName) {
+    const normalized = path.resolve(fileName);
+    if (sourceTexts.has(normalized)) return sourceTexts.get(normalized);
+    const source = ts.sys.readFile(normalized);
+    if (source !== undefined) sourceTexts.set(normalized, source);
+    return source;
+  }
+
+  function addImportedFiles(fileName, visited) {
+    const normalized = path.resolve(fileName);
+    if (visited.has(normalized)) return;
+    visited.add(normalized);
+    if (!isSupportedSource(normalized)) return;
+    const source = sourceTextFor(normalized);
+    if (source === undefined) return;
+    scriptFileNames.add(normalized);
+    const importedModules = [];
+    const importedFile = ts.createSourceFile(
+      normalized,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForFile(normalized),
+    );
+    function visitImports(node) {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+        importedModules.push(node.moduleSpecifier.text);
+      } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        importedModules.push(node.moduleSpecifier.text);
+      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)
+        && ts.isStringLiteral(node.moduleReference.expression)) {
+        importedModules.push(node.moduleReference.expression.text);
+      } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === "require" && node.arguments.length === 1
+        && ts.isStringLiteral(node.arguments[0])) {
+        importedModules.push(node.arguments[0].text);
+      }
+      ts.forEachChild(node, visitImports);
+    }
+    visitImports(importedFile);
+    for (const moduleName of importedModules) {
+      const resolved = ts.resolveModuleName(
+        moduleName,
+        normalized,
+        compilerOptions,
+        ts.sys,
+      ).resolvedModule;
+      if (resolved?.resolvedFileName) addImportedFiles(resolved.resolvedFileName, visited);
+    }
+  }
+
+  if (isWorkspaceOperation) {
+    if (scriptFileNames.size === 0) {
+      for (const fileName of ts.sys.readDirectory(
+        workspaceRoot,
+        [".ts", ".tsx", ".js", ".jsx"],
+        undefined,
+        undefined,
+      )) {
+        if (isSupportedSource(fileName)) scriptFileNames.add(path.resolve(fileName));
+      }
+    }
+  } else {
+    addImportedFiles(currentFileName, new Set());
+  }
+
+  const sourceFileCache = new Map();
+  function sourceFileFor(fileName) {
+    const normalized = path.resolve(fileName);
+    if (sourceFileCache.has(normalized)) return sourceFileCache.get(normalized);
+    const source = sourceTextFor(normalized);
+    if (source === undefined) return undefined;
+    const parsed = ts.createSourceFile(
+      normalized,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForFile(normalized),
+    );
+    sourceFileCache.set(normalized, parsed);
+    return parsed;
+  }
+
+  const host = {
+    fileExists: ts.sys.fileExists,
+    getCompilationSettings: () => compilerOptions,
+    getCurrentDirectory: () => workspaceRoot,
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    getScriptFileNames: () => [...scriptFileNames],
+    getScriptKind: scriptKindForFile,
+    getScriptSnapshot: (fileName) => {
+      const source = sourceTextFor(fileName);
+      return source === undefined ? undefined : ts.ScriptSnapshot.fromString(source);
+    },
+    getScriptVersion: () => "1",
+    readDirectory: ts.sys.readDirectory,
+    readFile: ts.sys.readFile,
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+  };
+  return {
+    service: ts.createLanguageService(host, ts.createDocumentRegistry()),
+    sourceFileFor,
+  };
+}
+
+function targetPosition(service, symbol) {
+  const definition = definitionByName.get(symbol);
+  if (definition) return definition.name_utf16_start;
+  let position;
+  function visit(node) {
+    if (position !== undefined) return;
+    if (ts.isIdentifier(node) && node.text === symbol) {
+      position = node.getStart(sourceFile);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  if (position === undefined) return undefined;
+  return position;
+}
+
+function locationForSpan(fileName, textSpan, symbol, isDefinition) {
+  const file = path.resolve(fileName);
+  const fileSource = projectSourceFile(file);
+  if (!fileSource) return undefined;
+  const start = fileSource.getLineAndCharacterOfPosition(textSpan.start);
+  const end = fileSource.getLineAndCharacterOfPosition(textSpan.start + textSpan.length);
+  return {
+    file,
+    symbol,
+    start_line: start.line + 1,
+    end_line: end.line + 1,
+    start_column: start.character + 1,
+    end_column: end.character + 1,
+    is_definition: isDefinition,
+  };
+}
+
+let projectSourceFile;
+
+function isCallReference(fileName, position) {
+  const file = projectSourceFile(fileName);
+  if (!file) return false;
+  let child = ts.getTokenAtPosition(file, position);
+  while (child && child.parent) {
+    const parent = child.parent;
+    if ((ts.isCallExpression(parent) || ts.isNewExpression(parent))
+      && parent.expression === child) return true;
+    if (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) {
+      child = parent;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+function isDefinitionReference(service, reference) {
+  const definitionsAtReference = service.getDefinitionAtPosition(
+    reference.fileName,
+    reference.textSpan.start,
+  ) || [];
+  return definitionsAtReference.some((definition) => (
+    path.resolve(definition.fileName) === path.resolve(reference.fileName)
+      && definition.textSpan.start === reference.textSpan.start
+  ));
+}
+
+function callableName(node) {
+  if (node.name) return nameOf(node.name) || "anonymous";
+  const parent = node.parent;
+  if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (parent && ts.isPropertyAssignment(parent)) return nameOf(parent.name) || "anonymous";
+  return "anonymous";
+}
+
+function callerAt(fileName, position) {
+  const file = projectSourceFile(fileName);
+  if (!file) return "<module>";
+  let node = ts.getTokenAtPosition(file, position);
+  while (node && node !== file) {
+    if (ts.isFunctionLike(node)) return callableName(node);
+    node = node.parent;
+  }
+  return "<module>";
+}
+
+function searchDefinitionsInFile(file) {
+  const results = [];
+
+  function visitChildrenLocal(node, scope) {
+    ts.forEachChild(node, (child) => visit(child, scope, node));
+  }
+
+  function add(name, node, nameNode, kind, scope) {
+    if (!name || !nameNode) return;
+    results.push({
+      name: [...scope, name].join("."),
+      kind,
+      nameStart: nameNode.getStart(file),
+      node,
+    });
+  }
+
+  function visit(node, scope, parent) {
+    if (ts.isFunctionDeclaration(node)) {
+      const name = nameOf(node.name) || (node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ? "default" : undefined);
+      if (name) add(name, node, node.name, classifyFunction(name, false, node), scope);
+      visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    if (ts.isClassDeclaration(node)) {
+      const name = nameOf(node.name) || (node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ? "default" : undefined);
+      if (name) add(name, node, node.name, "class", scope);
+      visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    if (ts.isVariableStatement(node)) {
+      const isConst = (node.declarationList.flags & ts.NodeFlags.Const) !== 0;
+      for (const declaration of node.declarationList.declarations) {
+        const entries = declarationNames(declaration.name);
+        for (const entry of entries) {
+          const classification = variableKind(entry.name, declaration.initializer, isConst);
+          add(entry.name, declaration, entry.node, classification.kind, scope);
+        }
+        // Visit the initializer once per declaration (see the parse walker):
+        // a destructuring pattern nests inner symbols in the enclosing scope
+        // rather than duplicating them under every binding.
+        if (declaration.initializer) {
+          const initializerScope = entries.length === 1 ? [...scope, entries[0].name] : scope;
+          visit(declaration.initializer, initializerScope, declaration);
+        }
+      }
+      return;
+    }
+    if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+      const name = nameOf(node.name);
+      if (name) add(name, node, node.name, "method", scope);
+      visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    if (ts.isPropertyAssignment(node) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      const name = nameOf(node.name);
+      if (name) add(name, node, node.name, "object_method", scope);
+      visit(node.initializer, name ? [...scope, name] : scope, node);
+      return;
+    }
+    if (ts.isInterfaceDeclaration(node)) {
+      add(nameOf(node.name), node, node.name, "interface", scope);
+      return;
+    }
+    if (ts.isTypeAliasDeclaration(node)) {
+      add(nameOf(node.name), node, node.name, "type", scope);
+      return;
+    }
+    if (ts.isEnumDeclaration(node)) {
+      add(nameOf(node.name), node, node.name, "enum", scope);
+      return;
+    }
+    if (ts.isModuleDeclaration(node)) {
+      const name = nameOf(node.name);
+      if (name) add(name, node, node.name, "namespace", scope);
+      visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    ts.forEachChild(node, (child) => visit(child, scope, node));
+  }
+
+  visit(file, [], undefined);
+  return results;
+}
+
+function searchOutput(service) {
+  const query = String(request.query || "").toLowerCase();
+  const kind = request.kind;
+  const maxResults = Math.min(Math.max(Number(request.max_results || 200), 1), 1000);
+  const matches = [];
+  for (const file of service.getProgram()?.getSourceFiles() || []) {
+    if (!isSupportedSource(file.fileName)) continue;
+    const normalized = path.resolve(file.fileName);
+    if (normalized !== workspaceRoot && !normalized.startsWith(`${workspaceRoot}${path.sep}`)) continue;
+    for (const definition of searchDefinitionsInFile(file)) {
+      if (query && !definition.name.toLowerCase().includes(query)) continue;
+      if (kind && definition.kind !== kind) continue;
+      const start = file.getLineAndCharacterOfPosition(definition.nameStart);
+      const nameEnd = definition.nameStart + definition.name.split(".").pop().length;
+      const end = file.getLineAndCharacterOfPosition(nameEnd);
+      matches.push({
+        name: definition.name,
+        kind: definition.kind,
+        file: normalized,
+        start_line: start.line + 1,
+        end_line: end.line + 1,
+        start_column: start.character + 1,
+        end_column: end.character + 1,
+      });
+      if (matches.length >= maxResults) return { search_symbols: matches };
+    }
+  }
+  return { search_symbols: matches };
+}
+
+function definitionEntryAtPosition(service, position) {
+  return service.getDefinitionAtPosition(currentFileName, position)?.[0];
+}
+
+function sourceFileFromProgram(service, fileName) {
+  return service.getProgram()?.getSourceFile(path.resolve(fileName));
+}
+
+function declarationContainerAt(file, position) {
+  let node = ts.getTokenAtPosition(file, position);
+  while (node && node !== file) {
+    if (ts.isVariableDeclaration(node)
+      && node.initializer
+      && (ts.isFunctionLike(node.initializer) || ts.isClassExpression(node.initializer))) {
+      return node.initializer;
+    }
+    if (ts.isFunctionLike(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) return node;
+    node = node.parent;
+  }
+  return undefined;
+}
+
+function containerLocation(container) {
+  const source = container.getSourceFile();
+  let nameNode = container.name;
+  if (!nameNode && container.parent && ts.isVariableDeclaration(container.parent)) nameNode = container.parent.name;
+  const symbol = nameOf(nameNode) || "<module>";
+  const start = nameNode ? nameNode.getStart(source) : container.getStart(source);
+  const end = nameNode ? nameNode.getEnd() : container.getStart(source);
+  return locationForSpan(source.fileName, { start, length: end - start }, symbol, true);
+}
+
+function nodeId(location) {
+  return `${path.resolve(location.file)}:${location.start_line}:${location.start_column}`;
+}
+
+function definitionLocationForSymbol(checker, symbol) {
+  if (!symbol) return undefined;
+  let resolved = symbol;
+  if ((resolved.flags & ts.SymbolFlags.Alias) !== 0) resolved = checker.getAliasedSymbol(resolved);
+  const declaration = resolved.declarations?.find((item) => isSupportedSource(item.getSourceFile().fileName));
+  if (!declaration) return undefined;
+  const source = declaration.getSourceFile();
+  const nameNode = declaration.name;
+  const start = nameNode ? nameNode.getStart(source) : declaration.getStart(source);
+  const end = nameNode ? nameNode.getEnd() : declaration.getStart(source);
+  return locationForSpan(
+    source.fileName,
+    { start, length: Math.max(0, end - start) },
+    resolved.getName(),
+    true,
+  );
+}
+
+function projectCalleeLocations(service, definition) {
+  const program = service.getProgram();
+  const checker = program?.getTypeChecker();
+  const file = sourceFileFromProgram(service, definition.fileName);
+  if (!checker || !file) return [];
+  const container = declarationContainerAt(file, definition.textSpan.start);
+  if (!container) return [];
+  const callees = [];
+  function visit(node) {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const expression = node.expression;
+      const lookupNode = ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)
+        ? expression.name || expression.argumentExpression
+        : expression;
+      const symbol = lookupNode ? checker.getSymbolAtLocation(lookupNode) : undefined;
+      const definitionLocation = definitionLocationForSymbol(checker, symbol);
+      if (definitionLocation) {
+        const callStart = expression.getStart(file);
+        const callEnd = expression.getEnd();
+        const callLocation = locationForSpan(
+          file.fileName,
+          { start: callStart, length: callEnd - callStart },
+          definitionLocation.symbol,
+          false,
+        );
+        if (callLocation) {
+          const key = `${callLocation.file}:${callLocation.start_line}:${callLocation.start_column}:${definitionLocation.file}:${definitionLocation.start_line}`;
+          if (!callees.some((item) => item.key === key)) {
+            callees.push({
+              key,
+              callee: definitionLocation.symbol,
+              location: callLocation,
+              definition: definitionLocation,
+            });
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(container);
+  return callees;
+}
+
+function callerLocationAt(service, fileName, position) {
+  const file = sourceFileFromProgram(service, fileName);
+  if (!file) return undefined;
+  const container = declarationContainerAt(file, position);
+  return container ? containerLocation(container) : undefined;
+}
+
+function implementationsOutput(service, position) {
+  const implementations = service.getImplementationAtPosition(currentFileName, position) || [];
+  return {
+    implementations: implementations
+      .filter((implementation) => isSupportedSource(implementation.fileName))
+      .map((implementation) => locationForSpan(
+        implementation.fileName,
+        implementation.textSpan,
+        implementation.name || "implementation",
+        true,
+      ))
+      .filter(Boolean),
+    symbol_found: true,
+  };
+}
+
+function positionForLineColumn(file, line, column) {
+  const lineStarts = file.getLineStarts();
+  const lineIndex = Math.max(0, line - 1);
+  const character = Math.max(0, column - 1);
+  if (lineIndex >= lineStarts.length) return undefined;
+  const position = lineStarts[lineIndex] + character;
+  const lineEnd = lineIndex + 1 < lineStarts.length ? lineStarts[lineIndex + 1] : file.text.length;
+  return position <= lineEnd ? position : undefined;
+}
+
+function typeInfoOutput(service) {
+  const file = sourceFileFromProgram(service, currentFileName);
+  if (!file) return { type_info: null };
+  const position = positionForLineColumn(file, Math.max(1, request.line || 1), Math.max(1, request.column || 1));
+  if (position === undefined) return { type_info: null };
+  const info = service.getQuickInfoAtPosition(currentFileName, position);
+  if (!info) return { type_info: null };
+  const location = locationForSpan(
+    currentFileName,
+    info.textSpan,
+    ts.displayPartsToString(info.displayParts || []),
+    false,
+  );
+  return {
+    type_info: {
+      kind: info.kind || "unknown",
+      display: ts.displayPartsToString(info.displayParts || []),
+      documentation: ts.displayPartsToString(info.documentation || []),
+      location,
+    },
+  };
+}
+
+function diagnosticSeverity(category) {
+  return {
+    [ts.DiagnosticCategory.Error]: "error",
+    [ts.DiagnosticCategory.Warning]: "warning",
+    [ts.DiagnosticCategory.Suggestion]: "suggestion",
+    [ts.DiagnosticCategory.Message]: "message",
+  }[category] || "message";
+}
+
+function diagnosticsOutput(service) {
+  const file = sourceFileFromProgram(service, currentFileName);
+  if (!file) return { diagnostics: [] };
+  const diagnostics = [
+    ...service.getSyntacticDiagnostics(currentFileName),
+    ...service.getSemanticDiagnostics(currentFileName),
+  ];
+  let symbolSpan;
+  if (request.symbol) {
+    const position = targetPosition(service, request.symbol);
+    const definition = position === undefined ? undefined : definitionEntryAtPosition(service, position);
+    if (definition) {
+      const definitionFile = sourceFileFromProgram(service, definition.fileName);
+      const container = definitionFile
+        ? declarationContainerAt(definitionFile, definition.textSpan.start)
+        : undefined;
+      symbolSpan = container
+        ? { start: container.getStart(definitionFile), length: container.getEnd() - container.getStart(definitionFile) }
+        : definition.textSpan;
+    }
+  }
+  return {
+    diagnostics: diagnostics
+      .filter((diagnostic) => {
+        if (!symbolSpan || diagnostic.start === undefined) return true;
+        const end = diagnostic.start + (diagnostic.length || 0);
+        return end >= symbolSpan.start && diagnostic.start <= symbolSpan.start + symbolSpan.length;
+      })
+      .map((diagnostic) => {
+        const start = diagnostic.start || 0;
+        const end = start + (diagnostic.length || 0);
+        const startLocation = file.getLineAndCharacterOfPosition(start);
+        const endLocation = file.getLineAndCharacterOfPosition(end);
+        return {
+          file: path.resolve(currentFileName),
+          severity: diagnosticSeverity(diagnostic.category),
+          code: Number(diagnostic.code),
+          message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\\n"),
+          start_line: startLocation.line + 1,
+          end_line: endLocation.line + 1,
+          start_column: startLocation.character + 1,
+          end_column: endLocation.character + 1,
+        };
+      }),
+  };
+}
+
+function hierarchyOutput(service, position) {
+  const rootDefinition = definitionEntryAtPosition(service, position);
+  if (!rootDefinition) return { hierarchy_nodes: [], hierarchy_edges: [], symbol_found: false };
+  const rootLocation = locationForSpan(
+    rootDefinition.fileName,
+    rootDefinition.textSpan,
+    rootDefinition.name,
+    true,
+  );
+  if (!rootLocation) return { hierarchy_nodes: [], hierarchy_edges: [], symbol_found: false };
+  const maxDepth = Math.min(Math.max(Number(request.depth || 2), 1), 8);
+  const nodes = new Map();
+  const edges = new Map();
+  const queue = [{ location: rootLocation, definition: rootDefinition, depth: 0 }];
+  function addNode(location) {
+    const id = nodeId(location);
+    if (!nodes.has(id)) nodes.set(id, {
+      id,
+      symbol: location.symbol,
+      file: location.file,
+      start_line: location.start_line,
+      end_line: location.end_line,
+    });
+    return id;
+  }
+  addNode(rootLocation);
+  const visited = new Set([nodeId(rootLocation)]);
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current.depth >= maxDepth) continue;
+    const callees = projectCalleeLocations(service, current.definition);
+    for (const callee of callees) {
+      const target = callee.definition;
+      const from = addNode(current.location);
+      const to = addNode(target);
+      edges.set(`${from}->${to}:callee`, { from, to, relation: "callee" });
+      if (!visited.has(to)) {
+        visited.add(to);
+        const targetFile = sourceFileFromProgram(service, target.file);
+        const targetPosition = targetFile
+          ? positionForLineColumn(targetFile, target.start_line, target.start_column)
+          : undefined;
+        const nextDefinition = targetPosition === undefined
+          ? undefined
+          : service.getDefinitionAtPosition(target.file, targetPosition);
+        queue.push({ location: target, definition: nextDefinition?.[0] || current.definition, depth: current.depth + 1 });
+      }
+    }
+    const references = service.getReferencesAtPosition(current.definition.fileName, current.definition.textSpan.start) || [];
+    for (const reference of references) {
+      if (!isSupportedSource(reference.fileName) || !isCallReference(reference.fileName, reference.textSpan.start)) continue;
+      const caller = callerLocationAt(service, reference.fileName, reference.textSpan.start);
+      if (!caller) continue;
+      const from = addNode(caller);
+      const to = addNode(current.location);
+      edges.set(`${from}->${to}:caller`, { from, to, relation: "caller" });
+      if (!visited.has(from)) {
+        visited.add(from);
+        const callerDefinition = service.getDefinitionAtPosition(caller.file, reference.textSpan.start)?.[0];
+        queue.push({ location: caller, definition: callerDefinition || current.definition, depth: current.depth + 1 });
+      }
+    }
+  }
+  return {
+    hierarchy_nodes: [...nodes.values()],
+    hierarchy_edges: [...edges.values()],
+    symbol_found: true,
+  };
+}
+
+function navigationOutput() {
+  const language = projectLanguageService();
+  projectSourceFile = language.sourceFileFor;
+  const service = language.service;
+  if (request.operation === "search_symbols") return searchOutput(service);
+  const symbol = request.symbol;
+  if (request.operation === "get_diagnostics") return diagnosticsOutput(service);
+  if (request.operation === "get_type") return typeInfoOutput(service);
+  if (request.operation === "go_to_definition") {
+    const current = projectSourceFile(currentFileName);
+    const position = positionForLineColumn(
+      current,
+      Math.max(1, request.line || 1),
+      Math.max(1, request.column || 1),
+    );
+    if (position === undefined) return { definition: null };
+    const definition = service.getDefinitionAtPosition(currentFileName, position)?.[0];
+    return {
+      definition: definition
+        ? locationForSpan(definition.fileName, definition.textSpan, definition.name, true)
+        : null,
+    };
+  }
+
+  const position = targetPosition(service, symbol);
+  if (position === undefined) {
+    if (request.operation === "find_callers") return { callers: [], symbol_found: false };
+    if (request.operation === "find_callees") return { callees: [], symbol_found: false };
+    if (request.operation === "get_call_hierarchy") return { hierarchy_nodes: [], hierarchy_edges: [], symbol_found: false };
+    if (request.operation === "find_implementations") return { implementations: [], symbol_found: false };
+    return { references: [], symbol_found: false };
+  }
+  if (request.operation === "find_implementations") return implementationsOutput(service, position);
+  if (request.operation === "find_callees") {
+    const definition = definitionEntryAtPosition(service, position);
+    return {
+      callees: definition ? projectCalleeLocations(service, definition) : [],
+      symbol_found: true,
+    };
+  }
+  if (request.operation === "get_call_hierarchy") return hierarchyOutput(service, position);
+  const references = service.getReferencesAtPosition(currentFileName, position) || [];
+  if (request.operation === "find_references") {
+    return {
+      references: references
+        .filter((reference) => isSupportedSource(reference.fileName))
+        .map((reference) => locationForSpan(
+          reference.fileName,
+          reference.textSpan,
+          symbol,
+          isDefinitionReference(service, reference),
+        ))
+        .filter(Boolean),
+      symbol_found: true,
+    };
+  }
+  return {
+    callers: references
+      .filter((reference) => isSupportedSource(reference.fileName))
+      .filter((reference) => isCallReference(reference.fileName, reference.textSpan.start))
+      .map((reference) => {
+        const location = locationForSpan(
+          reference.fileName,
+          reference.textSpan,
+          symbol,
+          false,
+        );
+        return location
+          ? { ...location, caller: callerAt(reference.fileName, reference.textSpan.start) }
+          : undefined;
+      })
+      .filter(Boolean),
+    symbol_found: true,
+  };
+}
+
 const output = {
   symbols: definitions.map(({ node, ...definition }) => definition),
   dependencies: Object.fromEntries(definitions.map((definition) => [definition.name, dependenciesFor(definition)])),
 };
+if (request.operation !== "parse") Object.assign(output, navigationOutput());
 process.stdout.write(JSON.stringify(output));

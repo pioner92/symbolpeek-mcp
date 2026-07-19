@@ -4,7 +4,7 @@ use rmcp::ErrorData as McpError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum CodeScopeError {
+pub enum SymbolPeekError {
     #[error(
         "unsupported file extension for {path}; supported extensions are .ts, .tsx, .js, and .jsx"
     )]
@@ -25,9 +25,12 @@ pub enum CodeScopeError {
 
     #[error("symbol '{symbol}' was not found in {path}")]
     SymbolNotFound { path: PathBuf, symbol: String },
+
+    #[error("operation '{operation}' is not supported by this language provider")]
+    UnsupportedOperation { operation: String },
 }
 
-impl CodeScopeError {
+impl SymbolPeekError {
     #[must_use]
     pub fn into_mcp(self) -> McpError {
         McpError::invalid_params(self.to_string(), None)

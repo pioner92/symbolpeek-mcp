@@ -1,8 +1,8 @@
-use codescope::{
-    errors::CodeScopeError,
+use serde_json::json;
+use symbolpeek::{
+    errors::SymbolPeekError,
     mcp::{json_result, unsupported_result},
 };
-use serde_json::json;
 
 #[test]
 fn serializes_structured_and_legacy_text_results_consistently() {
@@ -34,7 +34,7 @@ fn unsupported_result_has_only_the_protocol_flag() {
 
 #[test]
 fn domain_errors_convert_to_mcp_invalid_parameters() {
-    let error = CodeScopeError::SymbolNotFound {
+    let error = SymbolPeekError::SymbolNotFound {
         path: "component.tsx".into(),
         symbol: "Missing".to_owned(),
     };

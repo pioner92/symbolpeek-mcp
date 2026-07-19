@@ -1,6 +1,6 @@
 use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
-use codescope::{
+use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
     types::SymbolKind,

@@ -1,7 +1,7 @@
 {
-  "name": "codescope-runtime",
+  "name": "symbolpeek-runtime",
   "private": true,
-  "description": "Runtime dependency for the CodeScope MCP TypeScript Compiler API worker",
+  "description": "Runtime dependency for the SymbolPeek MCP TypeScript Compiler API worker",
   "dependencies": {
     "typescript": "~5.9.3"
   }

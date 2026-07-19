@@ -352,7 +352,7 @@ fn load_from_path(path: &Path) -> (LifetimeAccumulator, bool) {
 }
 
 fn default_statistics_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("CODESCOPE_STATS_PATH") {
+    if let Some(path) = std::env::var_os("SYMBOLPEEK_STATS_PATH") {
         return Some(PathBuf::from(path));
     }
 
@@ -360,14 +360,14 @@ fn default_statistics_path() -> Option<PathBuf> {
     {
         std::env::var_os("HOME")
             .map(PathBuf::from)
-            .map(|home| home.join("Library/Application Support/CodeScope/stats.json"))
+            .map(|home| home.join("Library/Application Support/SymbolPeek/stats.json"))
     }
 
     #[cfg(target_os = "windows")]
     {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
-            .map(|app_data| app_data.join("CodeScope/stats.json"))
+            .map(|app_data| app_data.join("SymbolPeek/stats.json"))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -375,7 +375,7 @@ fn default_statistics_path() -> Option<PathBuf> {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|config| config.join("codescope/stats.json"))
+            .map(|config| config.join("symbolpeek/stats.json"))
     }
 }
 
@@ -409,18 +409,22 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{LifetimeStatistics, SessionStatistics, SourceMetrics};
 
+    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
     fn temporary_statistics_path() -> PathBuf {
+        let sequence = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after UNIX epoch")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "codescope-statistics-{}-{timestamp}.json",
+            "symbolpeek-statistics-{}-{sequence}-{timestamp}.json",
             std::process::id()
         ))
     }

@@ -1,7 +1,7 @@
-# Replace /ABSOLUTE/PATH/TO/codescope with this repository's absolute path.
+# Replace /ABSOLUTE/PATH/TO/symbolpeek with this repository's absolute path.
 
-[mcp_servers.codescope]
+[mcp_servers.symbolpeek]
 command = "sh"
-args = ["/ABSOLUTE/PATH/TO/codescope/scripts/run-release.sh"]
-cwd = "/ABSOLUTE/PATH/TO/codescope"
+args = ["/ABSOLUTE/PATH/TO/symbolpeek/scripts/run-release.sh"]
+cwd = "/ABSOLUTE/PATH/TO/symbolpeek"
 startup_timeout_ms = 20_000

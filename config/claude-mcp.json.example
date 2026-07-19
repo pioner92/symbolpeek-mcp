@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "codescope": {
+    "symbolpeek": {
       "type": "stdio",
       "command": "sh",
       "args": [
-        "/ABSOLUTE/PATH/TO/codescope/scripts/run-release.sh"
+        "/ABSOLUTE/PATH/TO/symbolpeek/scripts/run-release.sh"
       ]
     }
   }

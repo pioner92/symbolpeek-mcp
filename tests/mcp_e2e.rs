@@ -20,12 +20,13 @@ impl McpClientProcess {
     fn start() -> Self {
         let sequence = NEXT_STATISTICS_PATH.fetch_add(1, Ordering::Relaxed);
         let statistics_path = std::env::temp_dir().join(format!(
-            "codescope-mcp-e2e-{}-{sequence}.json",
+            "symbolpeek-mcp-e2e-{}-{sequence}.json",
             std::process::id()
         ));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_codescope"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_symbolpeek"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .env("CODESCOPE_STATS_PATH", &statistics_path)
+            .env("SYMBOLPEEK_STATS_PATH", &statistics_path)
+            .env("SYMBOLPEEK_WORKSPACE_ROOT", env!("CARGO_MANIFEST_DIR"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -81,7 +82,7 @@ impl McpClientProcess {
             "params": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {},
-                "clientInfo": {"name": "codescope-tests", "version": "1.0.0"}
+                "clientInfo": {"name": "symbolpeek-tests", "version": "1.0.0"}
             }
         }));
         let response = self.receive();
@@ -118,6 +119,31 @@ fn fixture_path() -> String {
     format!("{}/tests/fixtures/sample.tsx", env!("CARGO_MANIFEST_DIR"))
 }
 
+fn navigation_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/dashboard.tsx",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+fn navigation_workspace_path() -> String {
+    format!("{}/tests/fixtures/navigation", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn contracts_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/contracts.ts",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+fn diagnostics_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/diagnostics.ts",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 #[test]
 fn starts_initializes_registers_tools_and_shuts_down() {
     let mut client = McpClientProcess::start();
@@ -137,8 +163,157 @@ fn starts_initializes_registers_tools_and_shuts_down() {
     assert!(names.contains(&"read_symbol"));
     assert!(names.contains(&"list_symbols"));
     assert!(names.contains(&"find_dependencies"));
+    assert!(names.contains(&"find_references"));
+    assert!(names.contains(&"find_callers"));
+    assert!(names.contains(&"go_to_definition"));
     assert!(names.contains(&"read_symbol_context"));
+    assert!(names.contains(&"search_symbols"));
+    assert!(names.contains(&"get_type"));
+    assert!(names.contains(&"find_implementations"));
+    assert!(names.contains(&"get_document_outline"));
+    assert!(names.contains(&"find_callees"));
+    assert!(names.contains(&"get_diagnostics"));
+    assert!(names.contains(&"get_call_hierarchy"));
     assert!(names.contains(&"get_statistics"));
+
+    client.shutdown();
+}
+
+#[test]
+fn handles_cross_file_navigation_requests() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+    let path = navigation_fixture_path();
+
+    client.send(&call(
+        "find_references",
+        40,
+        &json!({"path": path, "symbol": "useAuth"}),
+    ));
+    let references = client.receive();
+    assert!(references["result"]["structuredContent"]["references"]
+        .as_array()
+        .is_some_and(|items| items.len() >= 3));
+
+    client.send(&call(
+        "find_callers",
+        41,
+        &json!({"path": navigation_fixture_path(), "symbol": "useAuth"}),
+    ));
+    let callers = client.receive();
+    assert!(callers["result"]["structuredContent"]["callers"]
+        .as_array()
+        .is_some_and(|items| { items.iter().any(|item| item["caller"] == "Dashboard") }));
+
+    client.send(&call(
+        "go_to_definition",
+        42,
+        &json!({"path": navigation_fixture_path(), "line": 5, "column": 20}),
+    ));
+    let definition = client.receive();
+    assert!(
+        definition["result"]["structuredContent"]["definition"]["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with("navigation/auth.ts"))
+    );
+
+    client.shutdown();
+}
+
+#[test]
+fn handles_ast_intelligence_requests() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+
+    client.send(&call(
+        "search_symbols",
+        60,
+        &json!({"path": navigation_workspace_path(), "query": "useAuth"}),
+    ));
+    let search = client.receive();
+    assert!(search["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == "useAuth")));
+
+    client.send(&call(
+        "get_type",
+        61,
+        &json!({"path": navigation_fixture_path(), "line": 5, "column": 20}),
+    ));
+    let type_info = client.receive();
+    assert!(type_info["result"]["structuredContent"]["display"]
+        .as_str()
+        .is_some_and(|display| display.contains("useAuth")));
+
+    client.send(&call(
+        "find_implementations",
+        62,
+        &json!({"path": contracts_fixture_path(), "symbol": "Repository"}),
+    ));
+    let implementations = client.receive();
+    assert!(
+        implementations["result"]["structuredContent"]["implementations"]
+            .as_array()
+            .is_some_and(|items| items.len() >= 2)
+    );
+
+    client.send(&call(
+        "get_document_outline",
+        63,
+        &json!({"path": fixture_path()}),
+    ));
+    let outline = client.receive();
+    assert!(outline["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == "sendMessage")));
+
+    client.send(&call(
+        "find_callees",
+        64,
+        &json!({"path": fixture_path(), "symbol": "sendMessage"}),
+    ));
+    let callees = client.receive();
+    assert!(callees["result"]["structuredContent"]["callees"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["callee"] == "validateInput")));
+
+    client.send(&call(
+        "get_diagnostics",
+        65,
+        &json!({"path": diagnostics_fixture_path()}),
+    ));
+    let diagnostics = client.receive();
+    assert!(diagnostics["result"]["structuredContent"]["diagnostics"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    client.send(&call(
+        "get_call_hierarchy",
+        66,
+        &json!({"path": fixture_path(), "symbol": "sendMessage", "depth": 2}),
+    ));
+    let hierarchy = client.receive();
+    assert!(hierarchy["result"]["structuredContent"]["nodes"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["symbol"] == "sendMessage")));
+
+    client.shutdown();
+}
+
+#[test]
+fn resolves_relative_paths_against_configured_workspace_root() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+
+    client.send(&call(
+        "list_symbols",
+        50,
+        &json!({"path": "tests/fixtures/sample.tsx"}),
+    ));
+    let response = client.receive();
+    assert!(response["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|symbols| { symbols.iter().any(|symbol| symbol["name"] == "sendMessage") }));
 
     client.shutdown();
 }

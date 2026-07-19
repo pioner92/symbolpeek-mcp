@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use codescope::{
+use serde_json::{json, Value};
+use symbolpeek::{
     filesystem::load_source,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
     types::SymbolKind,
 };
-use serde_json::{json, Value};
 
 struct GoldenCase {
     source: &'static str,

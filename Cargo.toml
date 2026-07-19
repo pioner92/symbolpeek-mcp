@@ -1,5 +1,5 @@
 [package]
-name = "codescope"
+name = "symbolpeek"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
@@ -7,7 +7,7 @@ description = "An MCP server for retrieving minimal TypeScript and JavaScript so
 license = "MIT"
 
 [[bin]]
-name = "codescope"
+name = "symbolpeek"
 path = "src/main.rs"
 
 [dependencies]

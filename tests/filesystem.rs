@@ -4,8 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use codescope::{
-    errors::CodeScopeError,
+use symbolpeek::{
+    errors::SymbolPeekError,
     filesystem::{is_supported, load_source},
 };
 
@@ -15,7 +15,7 @@ fn test_directory() -> PathBuf {
         .expect("system clock should be after unix epoch")
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "codescope-filesystem-{}-{nonce}",
+        "symbolpeek-filesystem-{}-{nonce}",
         std::process::id()
     ));
     fs::create_dir_all(&path).expect("test directory should be creatable");
@@ -45,13 +45,16 @@ fn distinguishes_unsupported_and_missing_files() {
         .expect_err("unsupported files should not be parsed");
     assert!(matches!(
         unsupported_error,
-        CodeScopeError::UnsupportedExtension { .. }
+        SymbolPeekError::UnsupportedExtension { .. }
     ));
 
     let missing = directory.join("missing.ts");
     let missing_error = load_source(missing.to_str().expect("path should be valid UTF-8"))
         .expect_err("missing files should return a structured error");
-    assert!(matches!(missing_error, CodeScopeError::FileNotFound { .. }));
+    assert!(matches!(
+        missing_error,
+        SymbolPeekError::FileNotFound { .. }
+    ));
     assert!(!is_supported(&unsupported));
 
     fs::remove_dir_all(directory).expect("test directory should be removable");
@@ -65,7 +68,7 @@ fn rejects_non_utf8_source() {
 
     let error = load_source(path.to_str().expect("path should be valid UTF-8"))
         .expect_err("invalid UTF-8 should not be silently replaced");
-    assert!(matches!(error, CodeScopeError::ReadFile { .. }));
+    assert!(matches!(error, SymbolPeekError::ReadFile { .. }));
 
     fs::remove_dir_all(directory).expect("test directory should be removable");
 }
@@ -83,7 +86,7 @@ fn reports_permission_failures() {
 
     let error = load_source(path.to_str().expect("path should be valid UTF-8"))
         .expect_err("permission failures should be returned");
-    assert!(matches!(error, CodeScopeError::ReadFile { .. }));
+    assert!(matches!(error, SymbolPeekError::ReadFile { .. }));
 
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .expect("fixture permissions should be restorable");
