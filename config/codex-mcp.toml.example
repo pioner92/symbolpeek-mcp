@@ -1,0 +1,7 @@
+# Replace /ABSOLUTE/PATH/TO/codescope with this repository's absolute path.
+
+[mcp_servers.codescope]
+command = "sh"
+args = ["/ABSOLUTE/PATH/TO/codescope/scripts/run-release.sh"]
+cwd = "/ABSOLUTE/PATH/TO/codescope"
+startup_timeout_ms = 20_000

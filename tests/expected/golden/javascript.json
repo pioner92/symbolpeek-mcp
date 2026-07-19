@@ -1,0 +1,20 @@
+{
+  "list_symbols": [
+    {"name": "helper", "kind": "arrow_function", "start": 1, "end": 1},
+    {"name": "sendMessage", "kind": "function", "start": 3, "end": 5},
+    {"name": "createClient", "kind": "function", "start": 7, "end": 9}
+  ],
+  "read_symbol": {
+    "symbol": "sendMessage",
+    "kind": "function",
+    "start": 3,
+    "end": 5,
+    "source": "export function sendMessage(value) {\n  return helper(value);\n}"
+  },
+  "find_dependencies": ["helper"],
+  "read_symbol_context": {
+    "helpers": ["helper"],
+    "types": [],
+    "constants": []
+  }
+}

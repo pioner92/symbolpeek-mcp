@@ -1,0 +1,8 @@
+{
+  "name": "codescope-runtime",
+  "private": true,
+  "description": "Runtime dependency for the CodeScope MCP TypeScript Compiler API worker",
+  "dependencies": {
+    "typescript": "~5.9.3"
+  }
+}

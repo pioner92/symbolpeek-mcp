@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codescope": {
+      "type": "stdio",
+      "command": "sh",
+      "args": [
+        "/ABSOLUTE/PATH/TO/codescope/scripts/run-release.sh"
+      ]
+    }
+  }
+}

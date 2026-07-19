@@ -1,0 +1,19 @@
+{
+  "list_symbols": [
+    {"name": "café", "kind": "react_component", "start": 2, "end": 5},
+    {"name": "default", "kind": "react_component", "start": 7, "end": 7}
+  ],
+  "read_symbol": {
+    "symbol": "café",
+    "kind": "react_component",
+    "start": 2,
+    "end": 5,
+    "source": "export const café = (message: string) => {\n  // A partially nested expression is still valid TSX.\n  return <span data-label=\"café\">{message}</span>;\n};"
+  },
+  "find_dependencies": [],
+  "read_symbol_context": {
+    "helpers": [],
+    "types": [],
+    "constants": []
+  }
+}

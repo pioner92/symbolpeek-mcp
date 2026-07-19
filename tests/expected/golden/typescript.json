@@ -1,0 +1,27 @@
+{
+  "list_symbols": [
+    {"name": "sealed", "kind": "function", "start": 1, "end": 1},
+    {"name": "Identifier", "kind": "type", "start": 3, "end": 3},
+    {"name": "Pair", "kind": "type", "start": 4, "end": 4},
+    {"name": "Repository", "kind": "interface", "start": 6, "end": 9},
+    {"name": "Status", "kind": "enum", "start": 11, "end": 14},
+    {"name": "Domain", "kind": "namespace", "start": 16, "end": 18},
+    {"name": "BaseRepository", "kind": "class", "start": 20, "end": 27},
+    {"name": "load", "kind": "function", "start": 29, "end": 33},
+    {"name": "values", "kind": "arrow_function", "start": 35, "end": 35},
+    {"name": "stream", "kind": "function", "start": 36, "end": 36}
+  ],
+  "read_symbol": {
+    "symbol": "load",
+    "kind": "function",
+    "start": 29,
+    "end": 33,
+    "source": "export function load(id: Identifier): Promise<unknown>;\nexport function load(id: Identifier, cache: boolean): Promise<unknown>;\nexport async function load(id: Identifier, cache = true) {\n  return { id, cache };\n}"
+  },
+  "find_dependencies": ["Identifier"],
+  "read_symbol_context": {
+    "helpers": [],
+    "types": ["Identifier"],
+    "constants": []
+  }
+}

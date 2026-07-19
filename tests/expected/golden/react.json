@@ -1,0 +1,24 @@
+{
+  "list_symbols": [
+    {"name": "PanelProps", "kind": "interface", "start": 3, "end": 5},
+    {"name": "PanelContext", "kind": "constant", "start": 7, "end": 7},
+    {"name": "usePanelTitle", "kind": "hook", "start": 9, "end": 12},
+    {"name": "Panel", "kind": "react_component", "start": 14, "end": 18},
+    {"name": "PanelWithRef", "kind": "react_component", "start": 20, "end": 22},
+    {"name": "DeferredPanel", "kind": "react_component", "start": 24, "end": 24},
+    {"name": "PanelProvider", "kind": "react_component", "start": 26, "end": 28}
+  ],
+  "read_symbol": {
+    "symbol": "usePanelTitle",
+    "kind": "hook",
+    "start": 9,
+    "end": 12,
+    "source": "export function usePanelTitle() {\n  const value = useContext(PanelContext);\n  return value?.title ?? '';\n}"
+  },
+  "find_dependencies": ["PanelContext", "usePanelTitle.value"],
+  "read_symbol_context": {
+    "helpers": [],
+    "types": [],
+    "constants": ["PanelContext", "usePanelTitle.value"]
+  }
+}
