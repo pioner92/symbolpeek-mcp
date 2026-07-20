@@ -26,6 +26,13 @@ pub enum SymbolPeekError {
     #[error("symbol '{symbol}' was not found in {path}")]
     SymbolNotFound { path: PathBuf, symbol: String },
 
+    #[error("symbol '{symbol}' is nested in {path}; use a qualified name: {candidates}")]
+    AmbiguousSymbol {
+        path: PathBuf,
+        symbol: String,
+        candidates: String,
+    },
+
     #[error("operation '{operation}' is not supported by this language provider")]
     UnsupportedOperation { operation: String },
 }

@@ -167,6 +167,11 @@ pub struct CallHierarchyNode {
     pub symbol: String,
     pub file: PathBuf,
     pub lines: LineRange,
+    /// True when this symbol has many callers (a hub) and its caller subtree was
+    /// intentionally not expanded.
+    pub hub: bool,
+    /// Number of callers left unexpanded because this node is a hub.
+    pub callers_elided: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -185,6 +190,9 @@ pub struct CallHierarchyResult {
     pub root: String,
     pub nodes: Vec<CallHierarchyNode>,
     pub edges: Vec<CallHierarchyEdge>,
+    /// True when traversal hit the node budget (or a hub) and the graph is a
+    /// bounded subset rather than the full transitive closure.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]

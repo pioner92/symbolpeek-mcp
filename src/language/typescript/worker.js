@@ -568,6 +568,53 @@ function isCallReference(fileName, position) {
   return false;
 }
 
+// Rendering a component (`<Foo/>`) is the JSX equivalent of calling it.
+function isJsxReference(fileName, position) {
+  const file = projectSourceFile(fileName);
+  if (!file) return false;
+  let child = ts.getTokenAtPosition(file, position);
+  while (child && child.parent) {
+    const parent = child.parent;
+    if ((ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent))
+      && parent.tagName === child) return true;
+    if (ts.isPropertyAccessExpression(parent)) {
+      child = parent;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+// A component is often exported through a trivial wrapper
+// (`const Foo = memo(FooComponent)`); usages of the wrapper binding are usages
+// of the component. Returns the wrapper binding's name position, if any.
+function wrapperBindingPosition(sourceFile, targetName) {
+  let position;
+  function isWrapperCallee(expression) {
+    const name = ts.isIdentifier(expression)
+      ? expression.text
+      : (ts.isPropertyAccessExpression(expression) ? expression.name.text : undefined);
+    return name === "memo" || name === "forwardRef";
+  }
+  function visit(node) {
+    if (position !== undefined) return;
+    if (ts.isVariableDeclaration(node) && node.name && ts.isIdentifier(node.name)
+      && node.initializer && ts.isCallExpression(node.initializer)
+      && isWrapperCallee(node.initializer.expression)
+      && node.initializer.arguments.length >= 1) {
+      const argument = node.initializer.arguments[0];
+      if (ts.isIdentifier(argument) && argument.text === targetName) {
+        position = node.name.getStart(sourceFile);
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return position;
+}
+
 function isDefinitionReference(service, reference) {
   const definitionsAtReference = service.getDefinitionAtPosition(
     reference.fileName,
@@ -935,18 +982,32 @@ function hierarchyOutput(service, position) {
   );
   if (!rootLocation) return { hierarchy_nodes: [], hierarchy_edges: [], symbol_found: false };
   const maxDepth = Math.min(Math.max(Number(request.depth || 2), 1), 8);
+  // Keep a single call always consumable: cap total nodes and stop expanding
+  // high-fan-in "hub" symbols (useTheme, formatters, …) whose caller subtree
+  // would otherwise drag in most of the codebase.
+  const NODE_BUDGET = 200;
+  const HUB_CALLER_LIMIT = 40;
   const nodes = new Map();
   const edges = new Map();
+  let truncated = false;
   const queue = [{ location: rootLocation, definition: rootDefinition, depth: 0 }];
   function addNode(location) {
     const id = nodeId(location);
-    if (!nodes.has(id)) nodes.set(id, {
-      id,
-      symbol: location.symbol,
-      file: location.file,
-      start_line: location.start_line,
-      end_line: location.end_line,
-    });
+    if (!nodes.has(id)) {
+      if (nodes.size >= NODE_BUDGET) {
+        truncated = true;
+        return null;
+      }
+      nodes.set(id, {
+        id,
+        symbol: location.symbol,
+        file: location.file,
+        start_line: location.start_line,
+        end_line: location.end_line,
+        hub: false,
+        callers_elided: 0,
+      });
+    }
     return id;
   }
   addNode(rootLocation);
@@ -959,6 +1020,7 @@ function hierarchyOutput(service, position) {
       const target = callee.definition;
       const from = addNode(current.location);
       const to = addNode(target);
+      if (from === null || to === null) continue;
       edges.set(`${from}->${to}:callee`, { from, to, relation: "callee" });
       if (!visited.has(to)) {
         visited.add(to);
@@ -973,12 +1035,25 @@ function hierarchyOutput(service, position) {
       }
     }
     const references = service.getReferencesAtPosition(current.definition.fileName, current.definition.textSpan.start) || [];
-    for (const reference of references) {
-      if (!isSupportedSource(reference.fileName) || !isCallReference(reference.fileName, reference.textSpan.start)) continue;
+    const callSites = references.filter((reference) =>
+      isSupportedSource(reference.fileName) && isCallReference(reference.fileName, reference.textSpan.start));
+    // Hub guard: never expand the callers of a high-fan-in symbol (except the
+    // explicitly queried root). Keep the node, flag it, drop its caller subtree.
+    if (current.depth >= 1 && callSites.length > HUB_CALLER_LIMIT) {
+      const node = nodes.get(nodeId(current.location));
+      if (node) {
+        node.hub = true;
+        node.callers_elided = callSites.length;
+      }
+      truncated = true;
+      continue;
+    }
+    for (const reference of callSites) {
       const caller = callerLocationAt(service, reference.fileName, reference.textSpan.start);
       if (!caller) continue;
       const from = addNode(caller);
       const to = addNode(current.location);
+      if (from === null || to === null) continue;
       edges.set(`${from}->${to}:caller`, { from, to, relation: "caller" });
       if (!visited.has(from)) {
         visited.add(from);
@@ -990,6 +1065,7 @@ function hierarchyOutput(service, position) {
   return {
     hierarchy_nodes: [...nodes.values()],
     hierarchy_edges: [...edges.values()],
+    truncated,
     symbol_found: true,
   };
 }
@@ -1051,9 +1127,11 @@ function navigationOutput() {
     };
   }
   return {
-    callers: references
+    callers: collectCallerReferences(service, symbol, position)
       .filter((reference) => isSupportedSource(reference.fileName))
-      .filter((reference) => isCallReference(reference.fileName, reference.textSpan.start))
+      .filter((reference) =>
+        isCallReference(reference.fileName, reference.textSpan.start)
+        || isJsxReference(reference.fileName, reference.textSpan.start))
       .map((reference) => {
         const location = locationForSpan(
           reference.fileName,
@@ -1068,6 +1146,26 @@ function navigationOutput() {
       .filter(Boolean),
     symbol_found: true,
   };
+}
+
+// References that count as callers of `symbol`: its own references plus those of
+// a trivial wrapper binding (`const Foo = memo(FooComponent)`), deduplicated.
+function collectCallerReferences(service, symbol, position) {
+  const base = service.getReferencesAtPosition(currentFileName, position) || [];
+  const current = projectSourceFile(currentFileName);
+  const targetLeaf = symbol.split(".").pop();
+  const wrapperPosition = current ? wrapperBindingPosition(current, targetLeaf) : undefined;
+  if (wrapperPosition === undefined) return base;
+  const wrapperReferences = service.getReferencesAtPosition(currentFileName, wrapperPosition) || [];
+  const seen = new Set();
+  const combined = [];
+  for (const reference of [...base, ...wrapperReferences]) {
+    const key = `${reference.fileName}:${reference.textSpan.start}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(reference);
+  }
+  return combined;
 }
 
 const output = {

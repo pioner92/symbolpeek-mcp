@@ -123,3 +123,52 @@ fn reports_compiler_diagnostics_as_parse_errors() {
     };
     assert!(matches!(error, SymbolPeekError::Parse { .. }));
 }
+
+#[test]
+fn read_symbol_resolves_a_bare_nested_name() {
+    let file = sample_file();
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse fixture");
+
+    // `normalize` is declared inside `sendMessage`; a bare lookup must resolve
+    // to the same body as the qualified `sendMessage.normalize`.
+    let bare = parsed
+        .read_symbol(&file, "normalize")
+        .expect("bare nested name should resolve");
+    let qualified = parsed
+        .read_symbol(&file, "sendMessage.normalize")
+        .expect("qualified name should resolve");
+    assert_eq!(bare.symbol, "sendMessage.normalize");
+    assert_eq!(bare.source, qualified.source);
+}
+
+#[test]
+fn read_symbol_still_reports_truly_absent_names() {
+    let file = sample_file();
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse fixture");
+    let error = parsed
+        .read_symbol(&file, "definitelyMissingSymbol")
+        .expect_err("absent name should not resolve");
+    assert!(matches!(error, SymbolPeekError::SymbolNotFound { .. }));
+}
+
+#[test]
+fn read_symbol_reports_qualified_candidates_for_ambiguous_bare_names() {
+    let source = "function outer() {\n  const value = 1;\n  return value;\n}\n\
+function other() {\n  const value = 2;\n  return value;\n}\n";
+    let file = SourceFile {
+        path: PathBuf::from("ambiguous.ts"),
+        source: Arc::from(source),
+        extension: "ts".to_owned(),
+    };
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse inline source");
+    let error = parsed
+        .read_symbol(&file, "value")
+        .expect_err("ambiguous bare name should not silently resolve");
+    match error {
+        SymbolPeekError::AmbiguousSymbol { candidates, .. } => {
+            assert!(candidates.contains("outer.value"), "got: {candidates}");
+            assert!(candidates.contains("other.value"), "got: {candidates}");
+        }
+        other => panic!("expected AmbiguousSymbol, got {other:?}"),
+    }
+}

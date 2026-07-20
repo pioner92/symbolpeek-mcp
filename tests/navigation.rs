@@ -57,6 +57,40 @@ fn finds_cross_file_references_and_callers() {
 }
 
 #[test]
+fn finds_component_callers_through_a_memo_wrapper_and_jsx() {
+    let file = SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/memo_widget.tsx"),
+        source: Arc::from(include_str!("fixtures/navigation/memo_widget.tsx")),
+        extension: "tsx".to_owned(),
+    };
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("TypeScript worker should parse memo fixture");
+    let request = SymbolRequest {
+        path: file.path.display().to_string(),
+        symbol: "WidgetComponent".to_owned(),
+    };
+    let callers = parsed
+        .find_callers(&file, &request)
+        .expect("callers should resolve");
+    // `WidgetComponent` is used only via the `memo(...)` wrapper `Widget`,
+    // rendered as `<Widget/>` — a JSX usage, not a call expression.
+    assert!(
+        callers
+            .callers
+            .iter()
+            .any(|caller| caller.caller == "Screen"),
+        "expected Screen among callers, got: {:?}",
+        callers
+            .callers
+            .iter()
+            .map(|caller| caller.caller.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn resolves_usage_to_definition_through_imports() {
     let file = dashboard_file();
     let parsed = TypeScriptAdapter

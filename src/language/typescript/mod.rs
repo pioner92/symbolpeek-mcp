@@ -166,6 +166,8 @@ struct WorkerResponse {
     #[serde(default)]
     hierarchy_edges: Vec<WorkerHierarchyEdge>,
     #[serde(default)]
+    truncated: bool,
+    #[serde(default)]
     diagnostics: Vec<WorkerDiagnostic>,
     #[serde(default)]
     search_symbols: Vec<WorkerSearchSymbol>,
@@ -228,6 +230,10 @@ struct WorkerHierarchyNode {
     file: String,
     start_line: usize,
     end_line: usize,
+    #[serde(default)]
+    hub: bool,
+    #[serde(default)]
+    callers_elided: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,6 +451,60 @@ impl ParsedTypeScriptFile {
             .find(|definition| definition.name == symbol)
     }
 
+    /// Resolves a user-supplied symbol name to a definition.
+    ///
+    /// Tries an exact (qualified) match first. If the name is unqualified and
+    /// has no exact match, it falls back to matching the leaf name across
+    /// nested scopes — the same tree `get_document_outline` exposes — so bare
+    /// names like `play` resolve to `AudioPlayerProvider.play`. When several
+    /// nested symbols share the leaf name the result is ambiguous and the
+    /// qualified candidates are reported instead of a misleading "not found".
+    fn resolve(&self, symbol: &str) -> Resolution<'_> {
+        if let Some(definition) = self.definition(symbol) {
+            return Resolution::Found(definition);
+        }
+        if !symbol.contains('.') {
+            let mut matches = self
+                .definitions
+                .iter()
+                .filter(|definition| leaf_name(&definition.name) == symbol);
+            if let Some(first) = matches.next() {
+                let rest: Vec<&Definition> = matches.collect();
+                if rest.is_empty() {
+                    return Resolution::Found(first);
+                }
+                let mut candidates: Vec<String> = std::iter::once(first)
+                    .chain(rest)
+                    .map(|definition| definition.name.clone())
+                    .collect();
+                candidates.sort();
+                return Resolution::Ambiguous(candidates);
+            }
+        }
+        Resolution::NotFound
+    }
+
+    /// Resolves `symbol` or returns an actionable MCP error (ambiguous names
+    /// list their qualified candidates instead of reporting "not found").
+    fn require_definition(
+        &self,
+        file: &SourceFile,
+        symbol: &str,
+    ) -> Result<&Definition, SymbolPeekError> {
+        match self.resolve(symbol) {
+            Resolution::Found(definition) => Ok(definition),
+            Resolution::Ambiguous(candidates) => Err(SymbolPeekError::AmbiguousSymbol {
+                path: file.path.clone(),
+                symbol: symbol.to_owned(),
+                candidates: candidates.join(", "),
+            }),
+            Resolution::NotFound => Err(SymbolPeekError::SymbolNotFound {
+                path: file.path.clone(),
+                symbol: symbol.to_owned(),
+            }),
+        }
+    }
+
     fn read_definition(file: &SourceFile, definition: &Definition) -> ReadSymbolResult {
         let source = file
             .source
@@ -471,6 +531,20 @@ impl ParsedTypeScriptFile {
     fn local_definition_for(&self, name: &str) -> Option<&Definition> {
         self.definition(name)
     }
+}
+
+/// Outcome of resolving a user-supplied symbol name against the file's
+/// definitions (top-level and nested).
+enum Resolution<'a> {
+    Found(&'a Definition),
+    Ambiguous(Vec<String>),
+    NotFound,
+}
+
+/// The trailing segment of a possibly qualified symbol name
+/// (`AudioPlayerProvider.play` → `play`).
+fn leaf_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, leaf)| leaf)
 }
 
 fn line_range(source: &str, start: usize, end: usize) -> LineRange {
@@ -551,12 +625,8 @@ impl ParsedFile for ParsedTypeScriptFile {
         file: &SourceFile,
         symbol: &str,
     ) -> Result<ReadSymbolResult, SymbolPeekError> {
-        self.definition(symbol)
-            .map(|definition| Self::read_definition(file, definition))
-            .ok_or_else(|| SymbolPeekError::SymbolNotFound {
-                path: file.path.clone(),
-                symbol: symbol.to_owned(),
-            })
+        let definition = self.require_definition(file, symbol)?;
+        Ok(Self::read_definition(file, definition))
     }
 
     fn find_dependencies(
@@ -564,12 +634,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         file: &SourceFile,
         symbol: &str,
     ) -> Result<DependencyResult, SymbolPeekError> {
-        let definition =
-            self.definition(symbol)
-                .ok_or_else(|| SymbolPeekError::SymbolNotFound {
-                    path: file.path.clone(),
-                    symbol: symbol.to_owned(),
-                })?;
+        let definition = self.require_definition(file, symbol)?;
         Ok(DependencyResult {
             supported: true,
             file: file.path.clone(),
@@ -583,12 +648,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         file: &SourceFile,
         symbol: &str,
     ) -> Result<SymbolContextResult, SymbolPeekError> {
-        let definition =
-            self.definition(symbol)
-                .ok_or_else(|| SymbolPeekError::SymbolNotFound {
-                    path: file.path.clone(),
-                    symbol: symbol.to_owned(),
-                })?;
+        let definition = self.require_definition(file, symbol)?;
         let dependencies = self.dependencies_for(definition);
         let mut helper_functions = Vec::new();
         let mut local_types = Vec::new();
@@ -834,6 +894,7 @@ impl ParsedFile for ParsedTypeScriptFile {
                 .into_iter()
                 .map(hierarchy_edge)
                 .collect(),
+            truncated: response.truncated,
         })
     }
 
@@ -913,6 +974,8 @@ fn hierarchy_node(node: WorkerHierarchyNode) -> CallHierarchyNode {
             start: node.start_line,
             end: node.end_line,
         },
+        hub: node.hub,
+        callers_elided: node.callers_elided,
     }
 }
 
