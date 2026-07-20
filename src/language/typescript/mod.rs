@@ -345,7 +345,11 @@ impl ParsedTypeScriptFile {
                 line,
                 column,
                 depth,
-                workspace_root: None,
+                workspace_root: Some(
+                    crate::filesystem::resolve_project_root(&file.path)
+                        .display()
+                        .to_string(),
+                ),
                 query: None,
                 kind: None,
                 max_results: None,

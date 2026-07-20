@@ -224,7 +224,7 @@ try {
     name: "get_statistics",
     arguments: {},
   });
-  if (statistics.result.isError || statistics.result.structuredContent?.session?.successful_requests !== 11) {
+  if (statistics.result.isError || statistics.result.structuredContent?.session?.successful_requests !== 12) {
     throw new Error("get_statistics did not report the successful semantic requests");
   }
 
