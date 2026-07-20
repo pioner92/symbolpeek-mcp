@@ -172,3 +172,85 @@ function other() {\n  const value = 2;\n  return value;\n}\n";
         other => panic!("expected AmbiguousSymbol, got {other:?}"),
     }
 }
+
+#[test]
+fn list_symbols_reports_reexports_on_a_barrel_file() {
+    // A pure barrel has no local declarations; without re-export handling it
+    // would list nothing, indistinguishable from an empty or unparsable file.
+    let source = "export * from './useChats';\n\
+export * as messages from './useMessages';\n\
+export { useAuth, useSession as session } from './useAuth';\n\
+export { default as useTheme } from './useTheme';\n";
+    let file = SourceFile {
+        path: PathBuf::from("index.ts"),
+        source: Arc::from(source),
+        extension: "ts".to_owned(),
+    };
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse barrel");
+    let result = parsed.list_symbols(&file);
+
+    let names: Vec<_> = result
+        .symbols
+        .iter()
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    assert_eq!(names, ["*", "messages", "useAuth", "session", "useTheme"]);
+    assert!(result
+        .symbols
+        .iter()
+        .all(|symbol| symbol.kind == symbolpeek::types::SymbolKind::Reexport));
+
+    let specifiers: Vec<_> = result
+        .symbols
+        .iter()
+        .map(|symbol| symbol.module_specifier.as_deref())
+        .collect();
+    assert_eq!(
+        specifiers,
+        [
+            Some("./useChats"),
+            Some("./useMessages"),
+            Some("./useAuth"),
+            Some("./useAuth"),
+            Some("./useTheme"),
+        ]
+    );
+}
+
+#[test]
+fn list_symbols_mixes_local_declarations_and_reexports() {
+    // A local re-export without `from` points at an already-collected binding,
+    // so it must not produce a duplicate reexport symbol.
+    let source = "export const version = '1.0.0';\n\
+export * from './helpers';\n\
+export { version as v };\n";
+    let file = SourceFile {
+        path: PathBuf::from("index.ts"),
+        source: Arc::from(source),
+        extension: "ts".to_owned(),
+    };
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse mixed barrel");
+    let result = parsed.list_symbols(&file);
+
+    let names: Vec<_> = result
+        .symbols
+        .iter()
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    assert_eq!(names, ["version", "*"]);
+
+    let star = result
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "*")
+        .expect("star re-export present");
+    assert_eq!(star.kind, symbolpeek::types::SymbolKind::Reexport);
+    assert_eq!(star.module_specifier.as_deref(), Some("./helpers"));
+
+    let local = result
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "version")
+        .expect("local declaration present");
+    assert_eq!(local.module_specifier, None);
+}

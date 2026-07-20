@@ -19,6 +19,7 @@ pub enum SymbolKind {
     Type,
     Enum,
     Namespace,
+    Reexport,
     Unknown,
 }
 
@@ -34,6 +35,9 @@ pub struct SymbolInfo {
     pub kind: SymbolKind,
     pub file: PathBuf,
     pub lines: LineRange,
+    /// Present only for re-export symbols: the `from '...'` module specifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_specifier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]

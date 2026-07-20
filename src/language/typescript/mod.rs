@@ -224,6 +224,8 @@ struct WorkerSymbol {
     start: usize,
     end: usize,
     top_level: bool,
+    #[serde(default)]
+    module_specifier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -416,6 +418,7 @@ struct Definition {
     start: usize,
     end: usize,
     top_level: bool,
+    module_specifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -435,6 +438,7 @@ impl From<WorkerSymbol> for Definition {
             start: symbol.start,
             end: symbol.end,
             top_level: symbol.top_level,
+            module_specifier: symbol.module_specifier,
         }
     }
 }
@@ -454,6 +458,7 @@ fn parse_kind(kind: &str) -> SymbolKind {
         "type" => SymbolKind::Type,
         "enum" => SymbolKind::Enum,
         "namespace" => SymbolKind::Namespace,
+        "reexport" => SymbolKind::Reexport,
         _ => SymbolKind::Unknown,
     }
 }
@@ -643,6 +648,7 @@ impl ParsedFile for ParsedTypeScriptFile {
                     kind: definition.kind,
                     file: file.path.clone(),
                     lines: line_range(file.source.as_ref(), definition.start, definition.end),
+                    module_specifier: definition.module_specifier.clone(),
                 })
                 .collect(),
         }

@@ -58,6 +58,10 @@ if (sourceFile && sourceFile.parseDiagnostics.length > 0 && request.operation !=
 
 const definitions = [];
 const definitionByName = new Map();
+// Re-exports (`export ... from '...'`) have no local binding, so they live
+// outside `definitions`/`definitionByName` to keep name resolution clean. They
+// are merged into the emitted symbol list so barrel files aren't reported empty.
+const reexports = [];
 
 function byteOffset(utf16Offset) {
   return Buffer.byteLength(request.source.slice(0, utf16Offset), "utf8");
@@ -160,6 +164,23 @@ function addDefinition(name, node, nameNode, kind, category, scope, topLevel) {
   };
   definitions.push(definition);
   definitionByName.set(qualifiedName, definition);
+}
+
+function addReexport(name, node, moduleSpecifier, topLevel) {
+  const nodeSpan = span(node);
+  reexports.push({
+    name,
+    kind: "reexport",
+    category: "other",
+    start: nodeSpan.start,
+    end: nodeSpan.end,
+    name_start: nodeSpan.start,
+    name_end: nodeSpan.end,
+    name_utf16_start: node.getStart(sourceFile),
+    top_level: topLevel,
+    scope: [],
+    module_specifier: moduleSpecifier,
+  });
 }
 
 function visitChildren(node, scope, topLevel) {
@@ -271,6 +292,29 @@ function visit(node, scope, topLevel, parent) {
       addDefinition("default", node, undefined, kind, category, scope, topLevel);
     }
     visit(expression, [...scope, "default"], false, node);
+    return;
+  }
+
+  // Re-exports carry no local binding, so the branches above never match them.
+  // Emit a pseudo-symbol per re-export so barrel files aren't reported as empty.
+  // Only forms with a module specifier (`... from '...'`); a bare
+  // `export { local }` re-exports an already-collected local declaration.
+  if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    const moduleSpecifier = node.moduleSpecifier.text;
+    const clause = node.exportClause;
+    if (!clause) {
+      // export * from './x'
+      addReexport("*", node, moduleSpecifier, topLevel);
+    } else if (ts.isNamespaceExport(clause)) {
+      // export * as ns from './x'
+      addReexport(nameOf(clause.name) || "*", node, moduleSpecifier, topLevel);
+    } else if (ts.isNamedExports(clause)) {
+      // export { a, b as c, default as X } from './x'
+      for (const element of clause.elements) {
+        const name = nameOf(element.name);
+        if (name) addReexport(name, node, moduleSpecifier, topLevel);
+      }
+    }
     return;
   }
 
@@ -1213,7 +1257,7 @@ function collectCallerReferences(service, symbol, fileName, position) {
 }
 
 const output = {
-  symbols: definitions.map(({ node, ...definition }) => definition),
+  symbols: [...definitions.map(({ node, ...definition }) => definition), ...reexports],
   dependencies: Object.fromEntries(definitions.map((definition) => [definition.name, dependenciesFor(definition)])),
 };
 if (request.operation !== "parse") Object.assign(output, navigationOutput());
