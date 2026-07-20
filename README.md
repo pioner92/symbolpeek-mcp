@@ -1,6 +1,6 @@
 <div align="center">
 
-# SymbolPeek
+<img src="assets/image.webp" alt="SymbolPeek — ask for the symbol you need, not the entire file" width="100%">
 
 ### Semantic code intelligence for AI coding agents
 
