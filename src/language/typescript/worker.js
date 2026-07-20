@@ -1,8 +1,24 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const ts = require("typescript");
 
 const request = JSON.parse(fs.readFileSync(0, "utf8"));
+const ts = loadTypeScript();
+
+// Prefer the project's own TypeScript so parsing and resolution match the
+// version the project actually compiles with (newer syntax, version-specific
+// module resolution). Fall back to the bundled runtime when the project has
+// none. Node walks up node_modules from `base`, so the file's directory is a
+// sufficient starting point.
+function loadTypeScript() {
+  const base =
+    request.workspace_root ||
+    (request.path ? path.dirname(path.resolve(request.path)) : process.cwd());
+  try {
+    return require(require.resolve("typescript", { paths: [base] }));
+  } catch {
+    return require("typescript");
+  }
+}
 const isWorkspaceOperation = request.operation === "search_symbols";
 const workspaceRoot = path.resolve(
   request.workspace_root || (isWorkspaceOperation ? request.path : path.dirname(request.path)),
