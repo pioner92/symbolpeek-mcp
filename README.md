@@ -2,7 +2,7 @@
 
 # SymbolPeek
 
-### AST-first code retrieval for MCP clients
+### Semantic code intelligence for AI coding agents
 
 Ask for the symbol you need—not the entire file.
 
@@ -22,13 +22,10 @@ Ask for the symbol you need—not the entire file.
 
 </div>
 
-SymbolPeek is a production-oriented MCP server that gives LLMs precise,
-minimal source context from TypeScript and JavaScript projects. It uses the
-official TypeScript Compiler API and Language Service to retrieve symbols,
-dependencies, references, callers, and definitions from real ASTs.
+SymbolPeek helps AI coding agents understand large TypeScript and JavaScript codebases without reading unnecessary code. Instead of retrieving entire files, it returns only the requested symbols and their semantic relationships using the official TypeScript Compiler API and Language Service. This reduces token usage, minimizes irrelevant context, and gives agents precise information for navigation, analysis, and refactoring.
 
-The result is a smaller, more relevant context window with less manual file
-reading and less noise for the model.
+For an agent this means fewer whole files pulled into the context window, and
+fewer round-trips spent locating and verifying symbols by hand.
 
 ## Why SymbolPeek?
 
@@ -56,24 +53,81 @@ SymbolPeek is designed around four principles:
 - **Extensible architecture** — the MCP layer is independent of the language
   parser and can support future providers without language-specific MCP code.
 
+## Where it helps (and where it doesn't)
+
+SymbolPeek does not replace reading files or text search. It replaces the most
+expensive pattern an agent hits on a real codebase: *find a symbol, find
+everyone who touches it, and understand its type — across import aliases and
+re-exports.*
+
+**Where it genuinely saves an agent work and tokens**
+
+- **One symbol out of a large file.** `read_symbol` / `read_symbol_context`
+  return a single declaration instead of a whole file. On large files this is
+  the bulk of the token saving.
+- **Impact analysis without a grep loop.** `find_references` / `find_callers`
+  return each usage with its enclosing function and location in one call,
+  resolved through the project's module resolution — including path aliases
+  (`@app/...`) and barrel re-exports, which text search follows unreliably.
+- **Resolved types.** `get_type` returns the instantiated signature (for
+  example `useAsync<FeedPermission, Error>`), which text search cannot produce.
+- **Scoped discovery.** `search_symbols` finds declarations by name and kind
+  (for example "hooks matching `conversation`") without the noise of string
+  matches in comments and unrelated code.
+
+**Where an agent should still use ordinary tools**
+
+- Plain text, comments, config, or non-TS/JS files — `grep` is faster.
+- Understanding the full control flow inside one function — just read it.
+- Very large monorepos — each call spawns a short-lived worker and rebuilds a
+  TypeScript program (there is no cache), so latency is real; a targeted
+  `grep` can be faster for a single lookup.
+
+**What makes the results trustworthy**
+
+- Answers come from the TypeScript compiler and AST, not heuristics, so they
+  are deterministic and reproducible across runs.
+- Cross-file results are only as complete as module resolution allows: with a
+  `tsconfig.json` they span the whole project; without one they cover the
+  target file and its imports.
+- When the project ships its own TypeScript, that version is used, so parsing
+  and resolution match what the project actually compiles with.
+
 ## Capabilities at a glance
 
-| Capability | What it answers |
+### Navigation
+
+| Tool | What it answers |
 | --- | --- |
 | `read_symbol` | “Show me the exact source for this symbol.” |
 | `list_symbols` | “What are the top-level symbols in this file?” |
-| `find_dependencies` | “Which local symbols does this symbol depend on?” |
-| `find_references` | “Where is this symbol referenced across the project?” |
-| `find_callers` | “Which functions or methods call this symbol?” |
+| `search_symbols` | “Where is this symbol defined across the workspace?” |
 | `go_to_definition` | “Where is the definition behind this usage?” |
 | `read_symbol_context` | “Give me this symbol plus its minimal local context.” |
-| `search_symbols` | “Where is this symbol defined across the workspace?” |
+
+### Code Intelligence
+
+| Tool | What it answers |
+| --- | --- |
+| `find_references` | “Where is this symbol referenced across the project?” |
+| `find_callers` | “Which functions or methods call this symbol?” |
+| `find_callees` | “Which project symbols does this symbol call?” |
+| `find_dependencies` | “Which local symbols does this symbol depend on?” |
+| `get_call_hierarchy` | “What callers and callees surround this symbol?” |
+
+### Type Analysis
+
+| Tool | What it answers |
+| --- | --- |
 | `get_type` | “What is the inferred type or signature at this location?” |
 | `find_implementations` | “Which classes implement this interface or contract?” |
 | `get_document_outline` | “What is the nested declaration structure of this file?” |
-| `find_callees` | “Which project symbols does this symbol call?” |
 | `get_diagnostics` | “What TypeScript compiler diagnostics affect this file or symbol?” |
-| `get_call_hierarchy` | “What callers and callees surround this symbol?” |
+
+### Statistics
+
+| Tool | What it answers |
+| --- | --- |
 | `get_statistics` | “How much source context has SymbolPeek avoided?” |
 
 ## Supported source
@@ -171,13 +225,21 @@ symbolpeek stats --reset
 `--reset` resets lifetime totals only. Session counters belong to the running
 MCP process and are available through `get_statistics()`.
 
-Statistics include:
+All numbers are estimates that describe context the agent did **not** have to
+read:
 
-- files avoided;
-- lines avoided;
-- bytes avoided;
-- estimated token savings using a consistent four-bytes-per-token heuristic;
-- average context reduction.
+- **requests** — successful semantic calls;
+- **files avoided** — distinct source files answered from without the agent
+  opening them (one call, such as `find_callers`, can avoid several);
+- **bytes / lines avoided** — the size of the source files a request consulted
+  minus the response it returned;
+- **estimated token savings** — avoided bytes at a fixed ~4 bytes/token
+  heuristic, not a specific model's tokenization;
+- **average context reduction** — size-weighted across all requests.
+
+`get_statistics` returns both session and lifetime scopes plus a `note`
+describing this basis. Treat them as honest lower-bound estimates, not a claim
+about a particular model's tokenizer.
 
 Lifetime data is stored as human-readable JSON in the platform configuration
 directory:
@@ -500,7 +562,7 @@ SymbolPeekServer
             │
             └── TypeScriptAdapter
                     │ short-lived Node.js worker
-                    └── official TypeScript Compiler API
+                    └── TypeScript Compiler API (project's or bundled)
 ```
 
 The TypeScript provider keeps language-specific AST and Language Service logic
@@ -518,10 +580,14 @@ business logic.
 6. Successful requests update lightweight session and lifetime statistics.
 
 There is no database, background scan, or persistent AST cache. For each
-request, navigation builds a TypeScript Language Service program from the
-project's source set (as defined by the nearest `tsconfig.json`); when no
-`tsconfig` is found it falls back to the target file and its imported files.
-Nothing is cached between requests.
+request the provider detects the project root (nearest `tsconfig.json`,
+`jsconfig.json`, `package.json`, or `.git`) and, when the project ships its own
+TypeScript, loads that version so results match the project's compiler.
+Navigation then builds a TypeScript Language Service program from the project's
+source set (its `tsconfig.json` when present); without a `tsconfig` it falls
+back to the target file and its imported files. Nothing is cached between
+requests: every call sees the current source but pays the cost of building its
+program — cheap on a single file, heavier on a large project.
 
 ## Project structure
 
