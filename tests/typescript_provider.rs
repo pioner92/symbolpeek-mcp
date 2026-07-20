@@ -20,7 +20,7 @@ fn lists_only_top_level_symbols_with_ast_kinds() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("TypeScript worker should parse fixture");
-    let result = parsed.list_symbols(&file, None);
+    let result = parsed.list_symbols(&file, None, None);
     let names: Vec<_> = result
         .symbols
         .iter()
@@ -187,7 +187,7 @@ export { default as useTheme } from './useTheme';\n";
         extension: "ts".to_owned(),
     };
     let parsed = TypeScriptAdapter.parse(&file).expect("parse barrel");
-    let result = parsed.list_symbols(&file, None);
+    let result = parsed.list_symbols(&file, None, None);
 
     let names: Vec<_> = result
         .symbols
@@ -230,7 +230,7 @@ export { version as v };\n";
         extension: "ts".to_owned(),
     };
     let parsed = TypeScriptAdapter.parse(&file).expect("parse mixed barrel");
-    let result = parsed.list_symbols(&file, None);
+    let result = parsed.list_symbols(&file, None, None);
 
     let names: Vec<_> = result
         .symbols

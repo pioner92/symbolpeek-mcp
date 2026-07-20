@@ -4,8 +4,9 @@ use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
     types::{
-        CallDirection, CallHierarchyRequest, CallHierarchyResult, DiagnosticsRequest,
-        LocationRequest, SearchSymbolsRequest, SymbolRequest,
+        CallDirection, CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult,
+        DiagnosticsRequest, ImplementationsResult, LocationRequest, PagedSymbolRequest,
+        SearchSymbolsRequest,
     },
 };
 
@@ -27,16 +28,77 @@ fn fixture_file(name: &str, extension: &str, source: &'static str) -> SourceFile
     }
 }
 
+fn caller_keys(result: &CallersResult) -> Vec<(PathBuf, usize, usize, String)> {
+    result
+        .callers
+        .iter()
+        .map(|caller| {
+            (
+                result.files[caller.file_idx].clone(),
+                caller.lines.start,
+                caller.start_column,
+                caller.caller.clone(),
+            )
+        })
+        .collect()
+}
+
+type CalleeKey = (
+    PathBuf,
+    usize,
+    usize,
+    String,
+    Option<(PathBuf, usize, usize)>,
+);
+
+fn callee_keys(result: &CalleesResult) -> Vec<CalleeKey> {
+    result
+        .callees
+        .iter()
+        .map(|callee| {
+            (
+                result.files[callee.file_idx].clone(),
+                callee.lines.start,
+                callee.start_column,
+                callee.callee.clone(),
+                callee.definition.as_ref().map(|definition| {
+                    (
+                        result.files[definition.file_idx].clone(),
+                        definition.lines.start,
+                        definition.start_column,
+                    )
+                }),
+            )
+        })
+        .collect()
+}
+
+fn implementation_keys(result: &ImplementationsResult) -> Vec<(PathBuf, usize, usize, String)> {
+    result
+        .implementations
+        .iter()
+        .map(|implementation| {
+            (
+                result.files[implementation.file_idx].clone(),
+                implementation.lines.start,
+                implementation.start_column,
+                implementation.symbol.clone(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn finds_cross_file_references_and_callers() {
     let file = dashboard_file();
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("TypeScript worker should parse navigation fixture");
-    let request = SymbolRequest {
+    let request = PagedSymbolRequest {
         path: file.path.display().to_string(),
         symbol: "useAuth".to_owned(),
         max_results: None,
+        offset: None,
     };
 
     let references = parsed
@@ -61,6 +123,117 @@ fn finds_cross_file_references_and_callers() {
 }
 
 #[test]
+fn paginates_cross_file_references_stably() {
+    let file = dashboard_file();
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("TypeScript worker should parse navigation fixture");
+    let full_request = PagedSymbolRequest {
+        path: file.path.display().to_string(),
+        symbol: "useAuth".to_owned(),
+        max_results: None,
+        offset: None,
+    };
+    let references = parsed
+        .find_references(&file, &full_request)
+        .expect("references should resolve");
+    let mut offset = None;
+    let mut paged_locations = Vec::new();
+    loop {
+        let page = parsed
+            .find_references(
+                &file,
+                &PagedSymbolRequest {
+                    path: file.path.display().to_string(),
+                    symbol: "useAuth".to_owned(),
+                    max_results: Some(1),
+                    offset,
+                },
+            )
+            .expect("reference page should resolve");
+        assert_eq!(page.references.len(), 1);
+        let reference = &page.references[0];
+        paged_locations.push((
+            page.files[reference.file_idx].clone(),
+            reference.lines.start,
+            reference.start_column,
+            reference.is_definition,
+        ));
+        if !page.truncated {
+            assert_eq!(page.next_offset, None);
+            break;
+        }
+        let next = page
+            .next_offset
+            .expect("truncated page should have next_offset");
+        assert_eq!(next, offset.unwrap_or_default() + 1);
+        offset = Some(next);
+    }
+    let mut expected_locations = references
+        .references
+        .iter()
+        .map(|reference| {
+            (
+                references.files[reference.file_idx].clone(),
+                reference.lines.start,
+                reference.start_column,
+                reference.is_definition,
+            )
+        })
+        .collect::<Vec<_>>();
+    expected_locations.sort();
+    assert_eq!(paged_locations, expected_locations);
+
+    let past_end = parsed
+        .find_references(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "useAuth".to_owned(),
+                max_results: Some(1),
+                offset: Some(references.references.len()),
+            },
+        )
+        .expect("past-end reference page should resolve");
+    assert!(past_end.references.is_empty());
+    assert!(!past_end.truncated);
+    assert_eq!(past_end.next_offset, None);
+}
+
+#[test]
+fn paginates_cross_file_callers_stably() {
+    let file = dashboard_file();
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("TypeScript worker should parse navigation fixture");
+    let request = |max_results, offset| PagedSymbolRequest {
+        path: file.path.display().to_string(),
+        symbol: "useAuth".to_owned(),
+        max_results,
+        offset,
+    };
+    let callers = parsed
+        .find_callers(&file, &request(None, None))
+        .expect("callers should resolve");
+    let first_page = parsed
+        .find_callers(&file, &request(Some(1), None))
+        .expect("first caller page should resolve");
+    assert!(first_page.truncated);
+    assert_eq!(first_page.next_offset, Some(1));
+    let second_page = parsed
+        .find_callers(&file, &request(Some(1), first_page.next_offset))
+        .expect("second caller page should resolve");
+    assert!(!second_page.truncated);
+    assert_eq!(second_page.next_offset, None);
+
+    let mut paged = caller_keys(&first_page);
+    paged.extend(caller_keys(&second_page));
+    let mut expected = caller_keys(&callers);
+    expected.sort();
+    assert_eq!(paged, expected);
+}
+
+#[test]
 fn finds_component_callers_through_a_memo_wrapper_and_jsx() {
     let file = SourceFile {
         path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,10 +244,11 @@ fn finds_component_callers_through_a_memo_wrapper_and_jsx() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("TypeScript worker should parse memo fixture");
-    let request = SymbolRequest {
+    let request = PagedSymbolRequest {
         path: file.path.display().to_string(),
         symbol: "WidgetComponent".to_owned(),
         max_results: None,
+        offset: None,
     };
     let callers = parsed
         .find_callers(&file, &request)
@@ -166,10 +340,11 @@ fn finds_interface_implementations() {
     let result = parsed
         .find_implementations(
             &file,
-            &SymbolRequest {
+            &PagedSymbolRequest {
                 path: file.path.display().to_string(),
                 symbol: "Repository".to_owned(),
                 max_results: None,
+                offset: None,
             },
         )
         .expect("implementations should resolve");
@@ -179,6 +354,52 @@ fn finds_interface_implementations() {
     assert!(result.implementations.iter().any(|item| {
         result.files[item.file_idx].ends_with("contracts.ts") && item.lines.start == 11
     }));
+
+    let exact_page = parsed
+        .find_implementations(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "Repository".to_owned(),
+                max_results: Some(2),
+                offset: None,
+            },
+        )
+        .expect("exact implementation page should resolve");
+    assert_eq!(exact_page.implementations.len(), 2);
+    assert!(!exact_page.truncated);
+    assert_eq!(exact_page.next_offset, None);
+
+    let first_page = parsed
+        .find_implementations(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "Repository".to_owned(),
+                max_results: Some(1),
+                offset: None,
+            },
+        )
+        .expect("first implementation page should resolve");
+    assert_eq!(first_page.next_offset, Some(1));
+    let second_page = parsed
+        .find_implementations(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "Repository".to_owned(),
+                max_results: Some(1),
+                offset: first_page.next_offset,
+            },
+        )
+        .expect("second implementation page should resolve");
+    assert!(!second_page.truncated);
+    assert_eq!(second_page.next_offset, None);
+    let mut paged = implementation_keys(&first_page);
+    paged.extend(implementation_keys(&second_page));
+    let mut expected = implementation_keys(&result);
+    expected.sort();
+    assert_eq!(paged, expected);
 }
 
 #[test]
@@ -248,10 +469,11 @@ fn finds_direct_callees() {
     let result = parsed
         .find_callees(
             &file,
-            &SymbolRequest {
+            &PagedSymbolRequest {
                 path: file.path.display().to_string(),
                 symbol: "sendMessage".to_owned(),
                 max_results: None,
+                offset: None,
             },
         )
         .expect("callees should resolve");
@@ -263,6 +485,38 @@ fn finds_direct_callees() {
         .callees
         .iter()
         .any(|callee| callee.callee == "normalize"));
+
+    let first_page = parsed
+        .find_callees(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "sendMessage".to_owned(),
+                max_results: Some(1),
+                offset: None,
+            },
+        )
+        .expect("first callee page should resolve");
+    assert!(first_page.truncated);
+    assert_eq!(first_page.next_offset, Some(1));
+    let second_page = parsed
+        .find_callees(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: "sendMessage".to_owned(),
+                max_results: Some(1),
+                offset: first_page.next_offset,
+            },
+        )
+        .expect("second callee page should resolve");
+    assert!(!second_page.truncated);
+    assert_eq!(second_page.next_offset, None);
+    let mut paged = callee_keys(&first_page);
+    paged.extend(callee_keys(&second_page));
+    let mut expected = callee_keys(&result);
+    expected.sort();
+    assert_eq!(paged, expected);
 }
 
 #[test]
@@ -282,6 +536,7 @@ fn returns_compiler_diagnostics() {
                 path: file.path.display().to_string(),
                 symbol: Some("invalidReturn".to_owned()),
                 max_results: None,
+                offset: None,
             },
         )
         .expect("diagnostics should resolve");
@@ -299,6 +554,7 @@ fn returns_compiler_diagnostics() {
                 path: partial.path.display().to_string(),
                 symbol: None,
                 max_results: None,
+                offset: None,
             },
         )
         .expect("syntax diagnostics should resolve");
@@ -316,11 +572,31 @@ fn returns_compiler_diagnostics() {
                 path: noisy.path.display().to_string(),
                 symbol: None,
                 max_results: Some(1),
+                offset: None,
             },
         )
         .expect("limited diagnostics should resolve");
     assert_eq!(limited.diagnostics.len(), 1);
     assert!(limited.truncated);
+    assert_eq!(limited.next_offset, Some(1));
+    let final_page = TypeScriptAdapter
+        .diagnostics(
+            &noisy,
+            &DiagnosticsRequest {
+                path: noisy.path.display().to_string(),
+                symbol: None,
+                max_results: Some(1),
+                offset: limited.next_offset,
+            },
+        )
+        .expect("second diagnostics page should resolve");
+    assert_eq!(final_page.diagnostics.len(), 1);
+    assert_ne!(
+        limited.diagnostics[0].lines.start,
+        final_page.diagnostics[0].lines.start
+    );
+    assert!(!final_page.truncated);
+    assert_eq!(final_page.next_offset, None);
 }
 
 #[test]

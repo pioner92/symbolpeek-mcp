@@ -244,6 +244,23 @@ fn handles_cross_file_navigation_requests() {
         limited_references["result"]["structuredContent"]["truncated"],
         true
     );
+    assert_eq!(
+        limited_references["result"]["structuredContent"]["next_offset"],
+        1
+    );
+
+    client.send(&call(
+        "find_references",
+        44,
+        &json!({"path": navigation_fixture_path(), "symbol": "useAuth", "max_results": 1, "offset": 1}),
+    ));
+    let second_reference_page = client.receive();
+    assert_eq!(
+        second_reference_page["result"]["structuredContent"]["references"]
+            .as_array()
+            .map_or(0, Vec::len),
+        1
+    );
 
     client.send(&call(
         "find_callers",

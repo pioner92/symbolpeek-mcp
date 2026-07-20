@@ -55,6 +55,8 @@ pub struct ListSymbolsResult {
     pub file: PathBuf,
     pub symbols: Vec<SymbolInfo>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -104,6 +106,8 @@ pub struct ReferencesResult {
     pub files: Vec<PathBuf>,
     pub references: Vec<IndexedSymbolLocation>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -114,6 +118,8 @@ pub struct CallersResult {
     pub files: Vec<PathBuf>,
     pub callers: Vec<CallerLocation>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -154,6 +160,8 @@ pub struct ImplementationsResult {
     pub files: Vec<PathBuf>,
     pub implementations: Vec<IndexedSymbolLocation>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -187,6 +195,8 @@ pub struct CalleesResult {
     pub files: Vec<PathBuf>,
     pub callees: Vec<CalleeLocation>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -262,6 +272,8 @@ pub struct DiagnosticsResult {
     pub symbol: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -288,10 +300,18 @@ pub struct SymbolRequest {
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
     pub symbol: String,
-    #[schemars(
-        description = "Maximum number of list results; defaults to 200 and is capped at 1000"
-    )]
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PagedSymbolRequest {
+    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    pub path: String,
+    #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
+    pub symbol: String,
+    #[schemars(description = "Page size; defaults to 200 and is capped at 1000")]
     pub max_results: Option<usize>,
+    #[schemars(description = "Zero-based result offset; defaults to 0")]
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -366,6 +386,8 @@ pub struct DiagnosticsRequest {
         description = "Maximum number of diagnostics; defaults to 200 and is capped at 1000"
     )]
     pub max_results: Option<usize>,
+    #[schemars(description = "Zero-based diagnostic offset; defaults to 0")]
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -384,4 +406,6 @@ pub struct ListSymbolsRequest {
         description = "Maximum number of top-level symbols; defaults to 200 and is capped at 1000"
     )]
     pub max_results: Option<usize>,
+    #[schemars(description = "Zero-based symbol offset; defaults to 0")]
+    pub offset: Option<usize>,
 }

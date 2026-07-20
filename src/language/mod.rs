@@ -10,15 +10,20 @@ use crate::{
     types::{
         CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
         DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineResult,
-        ImplementationsResult, ListSymbolsResult, LocationRequest, ReadSymbolResult,
-        ReferencesResult, SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult,
-        SymbolRequest, TypeInfoResult,
+        ImplementationsResult, ListSymbolsResult, LocationRequest, PagedSymbolRequest,
+        ReadSymbolResult, ReferencesResult, SearchSymbolsRequest, SearchSymbolsResult,
+        SymbolContextResult, TypeInfoResult,
     },
 };
 
 /// Operations exposed by a parsed language-specific file.
 pub trait ParsedFile: Send + Sync {
-    fn list_symbols(&self, file: &SourceFile, max_results: Option<usize>) -> ListSymbolsResult;
+    fn list_symbols(
+        &self,
+        file: &SourceFile,
+        max_results: Option<usize>,
+        offset: Option<usize>,
+    ) -> ListSymbolsResult;
     /// Reads one symbol or returns a symbol-not-found error.
     ///
     /// # Errors
@@ -59,7 +64,7 @@ pub trait ParsedFile: Send + Sync {
     fn find_references(
         &self,
         _file: &SourceFile,
-        _request: &SymbolRequest,
+        _request: &PagedSymbolRequest,
     ) -> Result<ReferencesResult, SymbolPeekError> {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "find_references".to_owned(),
@@ -75,7 +80,7 @@ pub trait ParsedFile: Send + Sync {
     fn find_callers(
         &self,
         _file: &SourceFile,
-        _request: &SymbolRequest,
+        _request: &PagedSymbolRequest,
     ) -> Result<CallersResult, SymbolPeekError> {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "find_callers".to_owned(),
@@ -108,7 +113,7 @@ pub trait ParsedFile: Send + Sync {
     fn find_implementations(
         &self,
         _file: &SourceFile,
-        _request: &SymbolRequest,
+        _request: &PagedSymbolRequest,
     ) -> Result<ImplementationsResult, SymbolPeekError> {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "find_implementations".to_owned(),
@@ -140,7 +145,7 @@ pub trait ParsedFile: Send + Sync {
     fn find_callees(
         &self,
         _file: &SourceFile,
-        _request: &SymbolRequest,
+        _request: &PagedSymbolRequest,
     ) -> Result<CalleesResult, SymbolPeekError> {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "find_callees".to_owned(),

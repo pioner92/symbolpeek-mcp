@@ -66,6 +66,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                 query: Some(request.query.clone()),
                 kind: request.kind,
                 max_results: Some(max_results),
+                offset: None,
                 direction: None,
             },
             &root,
@@ -102,6 +103,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             query: None,
             kind: None,
             max_results: None,
+            offset: None,
             direction: None,
         };
         let response = run_worker(&request, &file.path)?;
@@ -124,14 +126,22 @@ impl LanguageAdapter for TypeScriptAdapter {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
+        let diagnostics = response
+            .diagnostics
+            .into_iter()
+            .map(diagnostic)
+            .collect::<Vec<_>>();
+        let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
         Ok(DiagnosticsResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            diagnostics: response.diagnostics.into_iter().map(diagnostic).collect(),
+            diagnostics,
             truncated: response.truncated,
+            next_offset,
         })
     }
 }
@@ -153,6 +163,8 @@ struct WorkerRequest {
     kind: Option<SymbolKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_results: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     direction: Option<&'static str>,
 }
@@ -193,6 +205,10 @@ fn default_symbol_found() -> bool {
 
 fn bounded_max_results(value: Option<usize>) -> usize {
     value.unwrap_or(DEFAULT_MAX_RESULTS).clamp(1, MAX_RESULTS)
+}
+
+fn next_offset(offset: Option<usize>, returned: usize, truncated: bool) -> Option<usize> {
+    truncated.then(|| offset.unwrap_or_default().saturating_add(returned))
 }
 
 #[derive(Debug, Default)]
@@ -383,6 +399,7 @@ impl ParsedTypeScriptFile {
         column: Option<usize>,
         depth: Option<usize>,
         max_results: Option<usize>,
+        offset: Option<usize>,
         direction: Option<&'static str>,
     ) -> Result<WorkerResponse, SymbolPeekError> {
         run_worker(
@@ -403,6 +420,7 @@ impl ParsedTypeScriptFile {
                 query: None,
                 kind: None,
                 max_results,
+                offset,
                 direction,
             },
             &file.path,
@@ -656,11 +674,18 @@ fn outline_node(
 }
 
 impl ParsedFile for ParsedTypeScriptFile {
-    fn list_symbols(&self, file: &SourceFile, max_results: Option<usize>) -> ListSymbolsResult {
+    fn list_symbols(
+        &self,
+        file: &SourceFile,
+        max_results: Option<usize>,
+        offset: Option<usize>,
+    ) -> ListSymbolsResult {
         let max_results = bounded_max_results(max_results);
+        let offset = offset.unwrap_or_default();
         let mut definitions = self.top_level_definitions();
-        let symbols = definitions
+        let symbols: Vec<_> = definitions
             .by_ref()
+            .skip(offset)
             .take(max_results)
             .map(|definition| SymbolInfo {
                 name: definition.name.clone(),
@@ -670,11 +695,13 @@ impl ParsedFile for ParsedTypeScriptFile {
             })
             .collect();
         let truncated = definitions.next().is_some();
+        let next_offset = truncated.then(|| offset.saturating_add(symbols.len()));
         ListSymbolsResult {
             supported: true,
             file: file.path.clone(),
             symbols,
             truncated,
+            next_offset,
         }
     }
 
@@ -769,7 +796,7 @@ impl ParsedFile for ParsedTypeScriptFile {
     fn find_references(
         &self,
         file: &SourceFile,
-        request: &crate::types::SymbolRequest,
+        request: &crate::types::PagedSymbolRequest,
     ) -> Result<crate::types::ReferencesResult, SymbolPeekError> {
         let response = Self::run_navigation(
             file,
@@ -779,6 +806,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
         if !response.symbol_found {
@@ -788,11 +816,12 @@ impl ParsedFile for ParsedTypeScriptFile {
             });
         }
         let mut files = FileTable::default();
-        let references = response
+        let references: Vec<_> = response
             .references
             .into_iter()
             .map(|location| indexed_reference_location(location, &mut files))
             .collect();
+        let next_offset = next_offset(request.offset, references.len(), response.truncated);
         Ok(crate::types::ReferencesResult {
             supported: true,
             file: file.path.clone(),
@@ -800,13 +829,14 @@ impl ParsedFile for ParsedTypeScriptFile {
             files: files.into_paths(),
             references,
             truncated: response.truncated,
+            next_offset,
         })
     }
 
     fn find_callers(
         &self,
         file: &SourceFile,
-        request: &crate::types::SymbolRequest,
+        request: &crate::types::PagedSymbolRequest,
     ) -> Result<crate::types::CallersResult, SymbolPeekError> {
         let response = Self::run_navigation(
             file,
@@ -816,6 +846,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
         if !response.symbol_found {
@@ -825,11 +856,12 @@ impl ParsedFile for ParsedTypeScriptFile {
             });
         }
         let mut files = FileTable::default();
-        let callers = response
+        let callers: Vec<_> = response
             .callers
             .into_iter()
             .map(|location| indexed_caller_location(location, &mut files))
             .collect();
+        let next_offset = next_offset(request.offset, callers.len(), response.truncated);
         Ok(crate::types::CallersResult {
             supported: true,
             file: file.path.clone(),
@@ -837,6 +869,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             files: files.into_paths(),
             callers,
             truncated: response.truncated,
+            next_offset,
         })
     }
 
@@ -852,6 +885,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             Some(line),
             Some(column),
+            None,
             None,
             None,
             None,
@@ -874,7 +908,7 @@ impl ParsedFile for ParsedTypeScriptFile {
     fn find_implementations(
         &self,
         file: &SourceFile,
-        request: &crate::types::SymbolRequest,
+        request: &crate::types::PagedSymbolRequest,
     ) -> Result<ImplementationsResult, SymbolPeekError> {
         let response = Self::run_navigation(
             file,
@@ -884,6 +918,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
         if !response.symbol_found {
@@ -893,11 +928,12 @@ impl ParsedFile for ParsedTypeScriptFile {
             });
         }
         let mut files = FileTable::default();
-        let implementations = response
+        let implementations: Vec<_> = response
             .implementations
             .into_iter()
             .map(|location| indexed_reference_location(location, &mut files))
             .collect();
+        let next_offset = next_offset(request.offset, implementations.len(), response.truncated);
         Ok(ImplementationsResult {
             supported: true,
             file: file.path.clone(),
@@ -905,6 +941,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             files: files.into_paths(),
             implementations,
             truncated: response.truncated,
+            next_offset,
         })
     }
 
@@ -919,6 +956,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             Some(request.line),
             Some(request.column),
+            None,
             None,
             None,
             None,
@@ -944,7 +982,7 @@ impl ParsedFile for ParsedTypeScriptFile {
     fn find_callees(
         &self,
         file: &SourceFile,
-        request: &crate::types::SymbolRequest,
+        request: &crate::types::PagedSymbolRequest,
     ) -> Result<CalleesResult, SymbolPeekError> {
         let response = Self::run_navigation(
             file,
@@ -954,6 +992,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
         if !response.symbol_found {
@@ -963,11 +1002,12 @@ impl ParsedFile for ParsedTypeScriptFile {
             });
         }
         let mut files = FileTable::default();
-        let callees = response
+        let callees: Vec<_> = response
             .callees
             .into_iter()
             .map(|location| indexed_callee_location(location, &mut files))
             .collect();
+        let next_offset = next_offset(request.offset, callees.len(), response.truncated);
         Ok(CalleesResult {
             supported: true,
             file: file.path.clone(),
@@ -975,6 +1015,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             files: files.into_paths(),
             callees,
             truncated: response.truncated,
+            next_offset,
         })
     }
 
@@ -990,6 +1031,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             request.depth,
+            None,
             None,
             request.worker_direction(),
         )?;
@@ -1071,14 +1113,22 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             Some(bounded_max_results(request.max_results)),
+            request.offset,
             None,
         )?;
+        let diagnostics = response
+            .diagnostics
+            .into_iter()
+            .map(diagnostic)
+            .collect::<Vec<_>>();
+        let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
         Ok(DiagnosticsResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            diagnostics: response.diagnostics.into_iter().map(diagnostic).collect(),
+            diagnostics,
             truncated: response.truncated,
+            next_offset,
         })
     }
 }

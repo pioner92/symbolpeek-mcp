@@ -811,11 +811,63 @@ function navigationMaxResults() {
   return Math.min(Math.max(Number(request.max_results || 200), 1), 1000);
 }
 
-function limitedResults(items) {
+function navigationOffset() {
+  const offset = Number(request.offset || 0);
+  if (!Number.isFinite(offset)) return 0;
+  return Math.min(Math.max(Math.trunc(offset), 0), Number.MAX_SAFE_INTEGER);
+}
+
+function compareText(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function compareNumber(left, right) {
+  return Number(left || 0) - Number(right || 0);
+}
+
+function compareLocations(left, right) {
+  return compareText(left.file, right.file)
+    || compareNumber(left.start_line, right.start_line)
+    || compareNumber(left.start_column, right.start_column)
+    || compareNumber(left.end_line, right.end_line)
+    || compareNumber(left.end_column, right.end_column)
+    || compareText(left.symbol, right.symbol)
+    || compareNumber(Boolean(left.is_definition), Boolean(right.is_definition));
+}
+
+function compareCallers(left, right) {
+  return compareLocations(left, right) || compareText(left.caller, right.caller);
+}
+
+function compareCallees(left, right) {
+  return compareLocations(left.location, right.location)
+    || compareText(left.callee, right.callee)
+    || compareLocations(left.definition || {}, right.definition || {});
+}
+
+function compareDiagnostics(left, right) {
+  return compareNumber(left.start, right.start)
+    || compareNumber(left.length, right.length)
+    || compareNumber(left.code, right.code)
+    || compareNumber(left.category, right.category)
+    || compareText(
+      ts.flattenDiagnosticMessageText(left.messageText, "\\n"),
+      ts.flattenDiagnosticMessageText(right.messageText, "\\n"),
+    );
+}
+
+function limitedResults(items, comparator) {
   const maxResults = navigationMaxResults();
+  const offset = navigationOffset();
+  if (comparator && (offset > 0 || items.length > maxResults)) {
+    items.sort(comparator);
+  }
+  const page = items.slice(offset, offset + maxResults + 1);
   return {
-    items: items.slice(0, maxResults),
-    truncated: items.length > maxResults,
+    items: page.slice(0, maxResults),
+    truncated: page.length > maxResults,
   };
 }
 
@@ -935,7 +987,7 @@ function implementationsOutput(service, position) {
       true,
     ))
     .filter(Boolean);
-  const limited = limitedResults(locations);
+  const limited = limitedResults(locations, compareLocations);
   return {
     implementations: limited.items,
     truncated: limited.truncated,
@@ -1011,10 +1063,9 @@ function diagnosticsOutput(service) {
     const end = diagnostic.start + (diagnostic.length || 0);
     return end >= symbolSpan.start && diagnostic.start <= symbolSpan.start + symbolSpan.length;
   });
-  const maxResults = navigationMaxResults();
+  const limited = limitedResults(matching, compareDiagnostics);
   return {
-    diagnostics: matching
-      .slice(0, maxResults)
+    diagnostics: limited.items
       .map((diagnostic) => {
         const start = diagnostic.start || 0;
         const end = start + (diagnostic.length || 0);
@@ -1030,7 +1081,7 @@ function diagnosticsOutput(service) {
           end_column: endLocation.character + 1,
         };
       }),
-    truncated: matching.length > maxResults,
+    truncated: limited.truncated,
   };
 }
 
@@ -1185,7 +1236,7 @@ function navigationOutput() {
   if (request.operation === "find_callees") {
     const definition = definitionEntryAtPosition(service, position);
     const callees = definition ? projectCalleeLocations(service, definition) : [];
-    const limited = limitedResults(callees);
+    const limited = limitedResults(callees, compareCallees);
     return {
       callees: limited.items,
       truncated: limited.truncated,
@@ -1204,7 +1255,7 @@ function navigationOutput() {
         isDefinitionReference(service, reference),
       ))
       .filter(Boolean);
-    const limited = limitedResults(locations);
+    const limited = limitedResults(locations, compareLocations);
     return {
       references: limited.items,
       truncated: limited.truncated,
@@ -1228,7 +1279,7 @@ function navigationOutput() {
           : undefined;
       })
       .filter(Boolean);
-  const limited = limitedResults(callers);
+  const limited = limitedResults(callers, compareCallers);
   return {
     callers: limited.items,
     truncated: limited.truncated,

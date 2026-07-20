@@ -29,7 +29,8 @@ List a bounded set of top-level symbols in one file.
 ```json
 {
   "path": "/project/src/chat.tsx",
-  "max_results": 200
+  "max_results": 200,
+  "offset": 0
 }
 ```
 
@@ -37,7 +38,8 @@ Nested symbols are not returned as top-level entries. Examples of qualified
 names used by other tools include `sendMessage.normalize` and
 `MessageStore.append`. The file path appears only at the top level. The symbol
 limit defaults to 200, is capped at 1000, and sets `truncated: true` when more
-top-level declarations exist.
+top-level declarations exist. When truncated, `next_offset` identifies the
+next page; pass it back as `offset`.
 
 ## `find_dependencies`
 
@@ -68,10 +70,13 @@ Find project references to a symbol, including its definition.
 Each result includes the symbol, line range, source columns, and whether the
 location is the definition. List results use a top-level `files` table and
 `fileIdx` indexes instead of repeating absolute paths; resolve a path as
-`files[fileIdx]`. `find_references`, `find_callers`, `find_callees`,
-`find_implementations`, and `search_symbols` accept an optional
-`max_results` (default 200, capped at 1000) and return `truncated: true` when
-the limit omits additional matches.
+`files[fileIdx]`. `find_references`, `find_callers`, `find_callees`, and
+`find_implementations` accept optional `max_results` (default 200, capped at
+1000) and `offset` (default 0). When another page exists, they return
+`truncated: true` and `next_offset`; pass that value back as `offset`. Each page
+has its own `files` table, so resolve `fileIdx` before combining pages.
+`search_symbols` supports the same result limit and `truncated` flag but is not
+offset-paginated yet.
 
 ## `find_callers`
 
@@ -167,8 +172,8 @@ contract at the requested symbol.
 }
 ```
 
-Results use the shared `files[]`/`fileIdx` representation and support the
-optional `max_results` limit.
+Results use the shared `files[]`/`fileIdx` representation and support optional
+`max_results` and `offset` pagination fields.
 
 ## `get_document_outline`
 
@@ -191,7 +196,8 @@ Find direct project-local calls made by a symbol. Each call site includes the
 resolved project definition when the TypeScript Language Service can resolve
 it. Framework APIs, external packages, and unresolved library calls are
 excluded. The call site and nested `definition` use the shared `files[]` table
-with `fileIdx`; `max_results` and `truncated` prevent unbounded responses.
+with `fileIdx`; `max_results`, `offset`, `truncated`, and `next_offset` provide
+bounded page-by-page responses.
 This tool currently follows call and `new` expressions; JSX render tags are
 recognized by `find_callers`, but are not emitted as callees here.
 
@@ -209,13 +215,15 @@ Return TypeScript compiler syntactic and semantic diagnostics for a file. Set
 compiler feedback, not an ESLint or formatter replacement. Every diagnostic
 belongs to the top-level `file`, so entries do not repeat the path. The result
 limit defaults to 200, is capped at 1000, and sets `truncated: true` when more
-diagnostics exist.
+diagnostics exist after the current page. When truncated, pass the returned
+`next_offset` as the next request's `offset`.
 
 ```json
 {
   "path": "/project/src/chat.tsx",
   "symbol": "sendMessage",
-  "max_results": 200
+  "max_results": 200,
+  "offset": 0
 }
 ```
 

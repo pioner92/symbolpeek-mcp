@@ -127,6 +127,13 @@ re-exports.*
 | `get_document_outline` | “What is the nested declaration structure of this file?” |
 | `get_diagnostics` | “What TypeScript compiler diagnostics affect this file or symbol?” |
 
+Flat bounded tools (`list_symbols`, references, callers, callees,
+implementations, and diagnostics) support `offset` pagination. A truncated
+page includes `next_offset`; pass it to the next request. Cross-file pages use
+page-local `files[]` tables, so join `fileIdx` before combining pages. Workspace
+`search_symbols`, nested outlines, and call graphs remain deliberately bounded
+without offset pagination.
+
 ### Statistics
 
 | Tool | What it answers |

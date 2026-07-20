@@ -23,7 +23,7 @@ fn empty_and_comment_only_files_have_no_symbols() {
     ] {
         let file = source_file(path, extension, source);
         let parsed = adapter.parse(&file).expect("empty files should parse");
-        assert!(parsed.list_symbols(&file, None).symbols.is_empty());
+        assert!(parsed.list_symbols(&file, None, None).symbols.is_empty());
     }
 }
 
@@ -62,7 +62,7 @@ fn merges_overload_declarations_without_losing_source() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("overloads should parse");
-    let symbols = parsed.list_symbols(&file, None).symbols;
+    let symbols = parsed.list_symbols(&file, None, None).symbols;
     assert_eq!(
         symbols
             .iter()
@@ -87,12 +87,20 @@ fn handles_a_large_single_file_without_project_scanning() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("large file should parse");
-    let default_list = parsed.list_symbols(&file, None);
+    let default_list = parsed.list_symbols(&file, None, None);
     assert_eq!(default_list.symbols.len(), 200);
     assert!(default_list.truncated);
-    let maximum_list = parsed.list_symbols(&file, Some(1_000));
+    assert_eq!(default_list.next_offset, Some(200));
+    let maximum_list = parsed.list_symbols(&file, Some(1_000), None);
     assert_eq!(maximum_list.symbols.len(), 1_000);
     assert!(maximum_list.truncated);
+    assert_eq!(maximum_list.next_offset, Some(1_000));
+    let second_page = parsed.list_symbols(&file, Some(1_000), Some(1_000));
+    assert_eq!(second_page.symbols.len(), 1_000);
+    assert_eq!(second_page.symbols[0].name, "value1000");
+    assert_eq!(second_page.symbols[999].name, "value1999");
+    assert!(!second_page.truncated);
+    assert_eq!(second_page.next_offset, None);
     let last = parsed
         .read_symbol(&file, "value1999")
         .expect("last symbol should be readable");

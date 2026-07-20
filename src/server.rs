@@ -16,8 +16,9 @@ use crate::{
         CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
         DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineRequest,
         DocumentOutlineResult, ImplementationsResult, ListSymbolsRequest, ListSymbolsResult,
-        LocationRequest, ReadSymbolResult, ReferencesResult, SearchSymbolsRequest,
-        SearchSymbolsResult, SymbolContextResult, SymbolRequest, TypeInfoResult,
+        LocationRequest, PagedSymbolRequest, ReadSymbolResult, ReferencesResult,
+        SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult, SymbolRequest,
+        TypeInfoResult,
     },
 };
 
@@ -236,7 +237,8 @@ impl SymbolPeekServer {
         let (file, parsed) = self
             .parse_file(&request.path)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ListSymbolsResult = parsed.list_symbols(&file, request.max_results);
+        let result: ListSymbolsResult =
+            parsed.list_symbols(&file, request.max_results, request.offset);
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
@@ -266,7 +268,7 @@ impl SymbolPeekServer {
     )]
     async fn find_references(
         &self,
-        Parameters(request): Parameters<SymbolRequest>,
+        Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
@@ -286,7 +288,7 @@ impl SymbolPeekServer {
     )]
     async fn find_callers(
         &self,
-        Parameters(request): Parameters<SymbolRequest>,
+        Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
@@ -374,7 +376,7 @@ impl SymbolPeekServer {
     )]
     async fn find_implementations(
         &self,
-        Parameters(request): Parameters<SymbolRequest>,
+        Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
@@ -434,7 +436,7 @@ impl SymbolPeekServer {
     )]
     async fn find_callees(
         &self,
-        Parameters(request): Parameters<SymbolRequest>,
+        Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
