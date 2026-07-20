@@ -18,7 +18,7 @@ use crate::{
 
 /// Operations exposed by a parsed language-specific file.
 pub trait ParsedFile: Send + Sync {
-    fn list_symbols(&self, file: &SourceFile) -> ListSymbolsResult;
+    fn list_symbols(&self, file: &SourceFile, max_results: Option<usize>) -> ListSymbolsResult;
     /// Reads one symbol or returns a symbol-not-found error.
     ///
     /// # Errors

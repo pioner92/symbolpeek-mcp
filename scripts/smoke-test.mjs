@@ -130,6 +130,9 @@ try {
   if (!listed.some((symbol) => symbol.name === "sendMessage")) {
     throw new Error("Smoke fixture did not return sendMessage");
   }
+  if (listed[0].file !== undefined || symbols.result.structuredContent?.truncated !== false) {
+    throw new Error("list_symbols did not return the compact bounded schema");
+  }
 
   const context = await request("tools/call", {
     name: "read_symbol_context",
@@ -137,6 +140,10 @@ try {
   });
   if (context.result.isError || context.result.structuredContent?.requested_symbol?.symbol !== "sendMessage") {
     throw new Error("read_symbol_context did not return sendMessage");
+  }
+  const requestedContext = context.result.structuredContent.requested_symbol;
+  if (requestedContext.file !== undefined || requestedContext.supported !== undefined) {
+    throw new Error("read_symbol_context repeated top-level metadata");
   }
 
   const references = await request("tools/call", {
@@ -214,6 +221,10 @@ try {
   });
   if (diagnostics.result.isError || !(diagnostics.result.structuredContent?.diagnostics?.length > 0)) {
     throw new Error("get_diagnostics did not return compiler diagnostics");
+  }
+  const diagnosticsContent = diagnostics.result.structuredContent;
+  if (diagnosticsContent.diagnostics[0].file !== undefined || diagnosticsContent.truncated !== false) {
+    throw new Error("get_diagnostics did not return the compact bounded schema");
   }
 
   const hierarchy = await request("tools/call", {

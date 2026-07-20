@@ -19,11 +19,11 @@ use crate::{
     language::{LanguageAdapter, ParsedFile},
     types::{
         CallHierarchyEdge, CallHierarchyNode, CallHierarchyRequest, CallHierarchyResult,
-        CalleeLocation, CalleesResult, DependencyResult, Diagnostic, DiagnosticsRequest,
-        DiagnosticsResult, DocumentOutlineNode, DocumentOutlineResult, ImplementationsResult,
-        IndexedSymbolLocation, LineRange, ListSymbolsResult, LocationRequest, ReadSymbolResult,
-        SearchSymbol, SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult, SymbolInfo,
-        SymbolKind, TypeInfoResult,
+        CalleeLocation, CalleesResult, ContextSymbol, DependencyResult, Diagnostic,
+        DiagnosticsRequest, DiagnosticsResult, DocumentOutlineNode, DocumentOutlineResult,
+        ImplementationsResult, IndexedSymbolLocation, LineRange, ListSymbolsResult,
+        LocationRequest, ReadSymbolResult, SearchSymbol, SearchSymbolsRequest, SearchSymbolsResult,
+        SymbolContextResult, SymbolInfo, SymbolKind, TypeInfoResult,
     },
 };
 
@@ -123,7 +123,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             None,
             None,
             None,
-            None,
+            Some(bounded_max_results(request.max_results)),
             None,
         )?;
         Ok(DiagnosticsResult {
@@ -131,6 +131,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             diagnostics: response.diagnostics.into_iter().map(diagnostic).collect(),
+            truncated: response.truncated,
         })
     }
 }
@@ -286,7 +287,6 @@ struct WorkerHierarchyEdge {
 
 #[derive(Debug, Deserialize)]
 struct WorkerDiagnostic {
-    file: String,
     severity: String,
     code: usize,
     message: String,
@@ -569,6 +569,19 @@ impl ParsedTypeScriptFile {
         }
     }
 
+    fn context_definition(file: &SourceFile, definition: &Definition) -> ContextSymbol {
+        ContextSymbol {
+            symbol: definition.name.clone(),
+            kind: definition.kind,
+            lines: line_range(file.source.as_ref(), definition.start, definition.end),
+            source: file
+                .source
+                .get(definition.start..definition.end)
+                .unwrap_or_default()
+                .to_owned(),
+        }
+    }
+
     fn dependencies_for(&self, definition: &Definition) -> Vec<String> {
         self.dependencies
             .get(&definition.name)
@@ -643,20 +656,25 @@ fn outline_node(
 }
 
 impl ParsedFile for ParsedTypeScriptFile {
-    fn list_symbols(&self, file: &SourceFile) -> ListSymbolsResult {
+    fn list_symbols(&self, file: &SourceFile, max_results: Option<usize>) -> ListSymbolsResult {
+        let max_results = bounded_max_results(max_results);
+        let mut definitions = self.top_level_definitions();
+        let symbols = definitions
+            .by_ref()
+            .take(max_results)
+            .map(|definition| SymbolInfo {
+                name: definition.name.clone(),
+                kind: definition.kind,
+                lines: line_range(file.source.as_ref(), definition.start, definition.end),
+                module_specifier: definition.module_specifier.clone(),
+            })
+            .collect();
+        let truncated = definitions.next().is_some();
         ListSymbolsResult {
             supported: true,
             file: file.path.clone(),
-            symbols: self
-                .top_level_definitions()
-                .map(|definition| SymbolInfo {
-                    name: definition.name.clone(),
-                    kind: definition.kind,
-                    file: file.path.clone(),
-                    lines: line_range(file.source.as_ref(), definition.start, definition.end),
-                    module_specifier: definition.module_specifier.clone(),
-                })
-                .collect(),
+            symbols,
+            truncated,
         }
     }
 
@@ -730,7 +748,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             if !seen.insert(dependency_definition.name.clone()) {
                 continue;
             }
-            let result = Self::read_definition(file, dependency_definition);
+            let result = Self::context_definition(file, dependency_definition);
             match dependency_definition.category {
                 Category::Function => helper_functions.push(result),
                 Category::Type => local_types.push(result),
@@ -741,7 +759,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         Ok(SymbolContextResult {
             supported: true,
             file: file.path.clone(),
-            requested_symbol: Self::read_definition(file, definition),
+            requested_symbol: Self::context_definition(file, definition),
             helper_functions,
             local_types,
             local_constants,
@@ -1052,7 +1070,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
-            None,
+            Some(bounded_max_results(request.max_results)),
             None,
         )?;
         Ok(DiagnosticsResult {
@@ -1060,6 +1078,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             diagnostics: response.diagnostics.into_iter().map(diagnostic).collect(),
+            truncated: response.truncated,
         })
     }
 }
@@ -1134,7 +1153,6 @@ fn indexed_callee_location(location: WorkerCallee, files: &mut FileTable) -> Cal
 
 fn diagnostic(item: WorkerDiagnostic) -> Diagnostic {
     Diagnostic {
-        file: PathBuf::from(item.file),
         severity: item.severity,
         code: item.code,
         message: item.message,

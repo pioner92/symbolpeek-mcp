@@ -15,7 +15,7 @@ use crate::{
     types::{
         CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
         DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineRequest,
-        DocumentOutlineResult, FileRequest, ImplementationsResult, ListSymbolsResult,
+        DocumentOutlineResult, ImplementationsResult, ListSymbolsRequest, ListSymbolsResult,
         LocationRequest, ReadSymbolResult, ReferencesResult, SearchSymbolsRequest,
         SearchSymbolsResult, SymbolContextResult, SymbolRequest, TypeInfoResult,
     },
@@ -225,10 +225,10 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&result))
     }
 
-    #[tool(description = "List all top-level symbols in one TypeScript or JavaScript file.")]
+    #[tool(description = "List bounded top-level symbols in one TypeScript or JavaScript file.")]
     async fn list_symbols(
         &self,
-        Parameters(request): Parameters<FileRequest>,
+        Parameters(request): Parameters<ListSymbolsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
@@ -236,7 +236,7 @@ impl SymbolPeekServer {
         let (file, parsed) = self
             .parse_file(&request.path)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ListSymbolsResult = parsed.list_symbols(&file);
+        let result: ListSymbolsResult = parsed.list_symbols(&file, request.max_results);
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }

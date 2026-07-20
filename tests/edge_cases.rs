@@ -23,7 +23,7 @@ fn empty_and_comment_only_files_have_no_symbols() {
     ] {
         let file = source_file(path, extension, source);
         let parsed = adapter.parse(&file).expect("empty files should parse");
-        assert!(parsed.list_symbols(&file).symbols.is_empty());
+        assert!(parsed.list_symbols(&file, None).symbols.is_empty());
     }
 }
 
@@ -62,7 +62,7 @@ fn merges_overload_declarations_without_losing_source() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("overloads should parse");
-    let symbols = parsed.list_symbols(&file).symbols;
+    let symbols = parsed.list_symbols(&file, None).symbols;
     assert_eq!(
         symbols
             .iter()
@@ -87,7 +87,12 @@ fn handles_a_large_single_file_without_project_scanning() {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("large file should parse");
-    assert_eq!(parsed.list_symbols(&file).symbols.len(), 2_000);
+    let default_list = parsed.list_symbols(&file, None);
+    assert_eq!(default_list.symbols.len(), 200);
+    assert!(default_list.truncated);
+    let maximum_list = parsed.list_symbols(&file, Some(1_000));
+    assert_eq!(maximum_list.symbols.len(), 1_000);
+    assert!(maximum_list.truncated);
     let last = parsed
         .read_symbol(&file, "value1999")
         .expect("last symbol should be readable");

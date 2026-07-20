@@ -15,14 +15,7 @@ fn serializes_structured_and_legacy_text_results_consistently() {
         result.content[0]
             .as_text()
             .map(|content| content.text.as_str()),
-        Some(
-            r#"{
-  "supported": true,
-  "symbols": [
-    "sendMessage"
-  ]
-}"#
-        )
+        Some(r#"{"supported":true,"symbols":["sendMessage"]}"#)
     );
 }
 

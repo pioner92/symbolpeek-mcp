@@ -47,7 +47,7 @@ fn run_golden_case(case: &GoldenCase) {
     let parsed = TypeScriptAdapter
         .parse(&file)
         .expect("fixture should parse with the TypeScript Compiler API");
-    let list = parsed.list_symbols(&file);
+    let list = parsed.list_symbols(&file, None);
     let list_symbols: Vec<_> = list
         .symbols
         .iter()

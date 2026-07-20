@@ -24,17 +24,20 @@ Returns the source, symbol kind, file path, and 1-based line range.
 
 ## `list_symbols`
 
-List all top-level symbols in one file.
+List a bounded set of top-level symbols in one file.
 
 ```json
 {
-  "path": "/project/src/chat.tsx"
+  "path": "/project/src/chat.tsx",
+  "max_results": 200
 }
 ```
 
 Nested symbols are not returned as top-level entries. Examples of qualified
 names used by other tools include `sendMessage.normalize` and
-`MessageStore.append`.
+`MessageStore.append`. The file path appears only at the top level. The symbol
+limit defaults to 200, is capped at 1000, and sets `truncated: true` when more
+top-level declarations exist.
 
 ## `find_dependencies`
 
@@ -111,6 +114,9 @@ Return the requested symbol with minimal same-file context:
 4. locally referenced constants.
 
 It does not recursively include the whole project.
+All returned fragments belong to the top-level `file`, so nested fragments
+contain only `symbol`, `kind`, `lines`, and `source`; they do not repeat
+`supported` or the absolute path.
 
 ## `search_symbols`
 
@@ -200,13 +206,16 @@ recognized by `find_callers`, but are not emitted as callees here.
 
 Return TypeScript compiler syntactic and semantic diagnostics for a file. Set
 `symbol` to scope the response to the declaration span of one symbol. This is
-compiler feedback, not an ESLint or formatter replacement. Diagnostics have no
-result cap, so symbol scoping is preferable on a noisy file.
+compiler feedback, not an ESLint or formatter replacement. Every diagnostic
+belongs to the top-level `file`, so entries do not repeat the path. The result
+limit defaults to 200, is capped at 1000, and sets `truncated: true` when more
+diagnostics exist.
 
 ```json
 {
   "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage"
+  "symbol": "sendMessage",
+  "max_results": 200
 }
 ```
 

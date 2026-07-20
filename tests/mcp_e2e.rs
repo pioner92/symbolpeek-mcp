@@ -346,9 +346,15 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": diagnostics_fixture_path()}),
     ));
     let diagnostics = client.receive();
-    assert!(diagnostics["result"]["structuredContent"]["diagnostics"]
+    let diagnostics_structured = &diagnostics["result"]["structuredContent"];
+    assert!(diagnostics_structured["diagnostics"]
         .as_array()
         .is_some_and(|items| !items.is_empty()));
+    assert_eq!(diagnostics_structured["truncated"], false);
+    assert!(diagnostics_structured["diagnostics"]
+        .as_array()
+        .and_then(|items| items.first())
+        .is_some_and(|item| item.get("file").is_none()));
 
     client.send(&call(
         "get_call_hierarchy",
@@ -416,9 +422,15 @@ fn resolves_relative_paths_against_configured_workspace_root() {
         &json!({"path": "tests/fixtures/sample.tsx"}),
     ));
     let response = client.receive();
-    assert!(response["result"]["structuredContent"]["symbols"]
+    let structured = &response["result"]["structuredContent"];
+    assert!(structured["symbols"]
         .as_array()
         .is_some_and(|symbols| { symbols.iter().any(|symbol| symbol["name"] == "sendMessage") }));
+    assert_eq!(structured["truncated"], false);
+    assert!(structured["symbols"]
+        .as_array()
+        .and_then(|symbols| symbols.first())
+        .is_some_and(|symbol| symbol.get("file").is_none()));
 
     client.shutdown();
 }
@@ -492,6 +504,16 @@ fn handles_concurrent_requests() {
     assert_eq!(
         responses[&21]["result"]["structuredContent"]["requested_symbol"]["symbol"],
         "sendMessage"
+    );
+    assert!(
+        responses[&21]["result"]["structuredContent"]["requested_symbol"]
+            .get("file")
+            .is_none()
+    );
+    assert!(
+        responses[&21]["result"]["structuredContent"]["requested_symbol"]
+            .get("supported")
+            .is_none()
     );
 
     client.shutdown();

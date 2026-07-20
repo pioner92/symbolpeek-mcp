@@ -987,7 +987,7 @@ function diagnosticSeverity(category) {
 
 function diagnosticsOutput(service) {
   const file = sourceFileFromProgram(service, currentFileName);
-  if (!file) return { diagnostics: [] };
+  if (!file) return { diagnostics: [], truncated: false };
   const diagnostics = [
     ...service.getSyntacticDiagnostics(currentFileName),
     ...service.getSemanticDiagnostics(currentFileName),
@@ -1006,20 +1006,21 @@ function diagnosticsOutput(service) {
         : definition.textSpan;
     }
   }
+  const matching = diagnostics.filter((diagnostic) => {
+    if (!symbolSpan || diagnostic.start === undefined) return true;
+    const end = diagnostic.start + (diagnostic.length || 0);
+    return end >= symbolSpan.start && diagnostic.start <= symbolSpan.start + symbolSpan.length;
+  });
+  const maxResults = navigationMaxResults();
   return {
-    diagnostics: diagnostics
-      .filter((diagnostic) => {
-        if (!symbolSpan || diagnostic.start === undefined) return true;
-        const end = diagnostic.start + (diagnostic.length || 0);
-        return end >= symbolSpan.start && diagnostic.start <= symbolSpan.start + symbolSpan.length;
-      })
+    diagnostics: matching
+      .slice(0, maxResults)
       .map((diagnostic) => {
         const start = diagnostic.start || 0;
         const end = start + (diagnostic.length || 0);
         const startLocation = file.getLineAndCharacterOfPosition(start);
         const endLocation = file.getLineAndCharacterOfPosition(end);
         return {
-          file: path.resolve(currentFileName),
           severity: diagnosticSeverity(diagnostic.category),
           code: Number(diagnostic.code),
           message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\\n"),
@@ -1029,6 +1030,7 @@ function diagnosticsOutput(service) {
           end_column: endLocation.character + 1,
         };
       }),
+    truncated: matching.length > maxResults,
   };
 }
 

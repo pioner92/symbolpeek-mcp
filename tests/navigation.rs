@@ -281,6 +281,7 @@ fn returns_compiler_diagnostics() {
             &DiagnosticsRequest {
                 path: file.path.display().to_string(),
                 symbol: Some("invalidReturn".to_owned()),
+                max_results: None,
             },
         )
         .expect("diagnostics should resolve");
@@ -297,10 +298,29 @@ fn returns_compiler_diagnostics() {
             &DiagnosticsRequest {
                 path: partial.path.display().to_string(),
                 symbol: None,
+                max_results: None,
             },
         )
         .expect("syntax diagnostics should resolve");
     assert!(!syntax_result.diagnostics.is_empty());
+
+    let noisy = fixture_file(
+        "noisy.ts",
+        "ts",
+        "const first: string = 1;\nconst second: string = 2;\n",
+    );
+    let limited = TypeScriptAdapter
+        .diagnostics(
+            &noisy,
+            &DiagnosticsRequest {
+                path: noisy.path.display().to_string(),
+                symbol: None,
+                max_results: Some(1),
+            },
+        )
+        .expect("limited diagnostics should resolve");
+    assert_eq!(limited.diagnostics.len(), 1);
+    assert!(limited.truncated);
 }
 
 #[test]

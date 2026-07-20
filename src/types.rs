@@ -33,7 +33,6 @@ pub struct LineRange {
 pub struct SymbolInfo {
     pub name: String,
     pub kind: SymbolKind,
-    pub file: PathBuf,
     pub lines: LineRange,
     /// Present only for re-export symbols: the `from '...'` module specifier.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +54,7 @@ pub struct ListSymbolsResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbols: Vec<SymbolInfo>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -247,7 +247,6 @@ pub struct DocumentOutlineResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Diagnostic {
-    pub file: PathBuf,
     pub severity: String,
     pub code: usize,
     pub message: String,
@@ -262,16 +261,25 @@ pub struct DiagnosticsResult {
     pub file: PathBuf,
     pub symbol: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct ContextSymbol {
+    pub symbol: String,
+    pub kind: SymbolKind,
+    pub lines: LineRange,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SymbolContextResult {
     pub supported: bool,
     pub file: PathBuf,
-    pub requested_symbol: ReadSymbolResult,
-    pub helper_functions: Vec<ReadSymbolResult>,
-    pub local_types: Vec<ReadSymbolResult>,
-    pub local_constants: Vec<ReadSymbolResult>,
+    pub requested_symbol: ContextSymbol,
+    pub helper_functions: Vec<ContextSymbol>,
+    pub local_types: Vec<ContextSymbol>,
+    pub local_constants: Vec<ContextSymbol>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -354,6 +362,10 @@ pub struct DiagnosticsRequest {
     pub path: String,
     #[schemars(description = "Optional symbol to scope diagnostics to")]
     pub symbol: Option<String>,
+    #[schemars(
+        description = "Maximum number of diagnostics; defaults to 200 and is capped at 1000"
+    )]
+    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -365,7 +377,11 @@ pub struct DocumentOutlineRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct FileRequest {
+pub struct ListSymbolsRequest {
     #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
     pub path: String,
+    #[schemars(
+        description = "Maximum number of top-level symbols; defaults to 200 and is capped at 1000"
+    )]
+    pub max_results: Option<usize>,
 }
