@@ -219,7 +219,7 @@ fn returns_nested_document_outline() {
         .parse(&file)
         .expect("sample fixture should parse");
     let result = parsed
-        .get_document_outline(&file)
+        .get_document_outline(&file, None)
         .expect("document outline should resolve");
     let send_message = result
         .symbols
@@ -230,6 +230,13 @@ fn returns_nested_document_outline() {
         .children
         .iter()
         .any(|child| child.name == "normalize"));
+    assert!(!result.truncated);
+
+    let limited = parsed
+        .get_document_outline(&file, Some(1))
+        .expect("limited document outline should resolve");
+    assert_eq!(limited.symbols.len(), 1);
+    assert!(limited.truncated);
 }
 
 #[test]

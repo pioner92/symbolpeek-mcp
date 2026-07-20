@@ -612,16 +612,23 @@ fn outline_node(
     parsed: &ParsedTypeScriptFile,
     file: &SourceFile,
     definition: &Definition,
+    remaining: &mut usize,
+    truncated: &mut bool,
 ) -> DocumentOutlineNode {
+    debug_assert!(*remaining > 0);
+    *remaining -= 1;
     let prefix = format!("{}.", definition.name);
-    let children = parsed
-        .definitions
-        .iter()
-        .filter(|candidate| {
-            candidate.name.starts_with(&prefix) && !candidate.name[prefix.len()..].contains('.')
-        })
-        .map(|candidate| outline_node(parsed, file, candidate))
-        .collect();
+    let candidates = parsed.definitions.iter().filter(|candidate| {
+        candidate.name.starts_with(&prefix) && !candidate.name[prefix.len()..].contains('.')
+    });
+    let mut children = Vec::new();
+    for candidate in candidates {
+        if *remaining == 0 {
+            *truncated = true;
+            break;
+        }
+        children.push(outline_node(parsed, file, candidate, remaining, truncated));
+    }
     let name = definition
         .name
         .rsplit_once('.')
@@ -630,7 +637,6 @@ fn outline_node(
     DocumentOutlineNode {
         name,
         kind: definition.kind,
-        file: file.path.clone(),
         lines: line_range(file.source.as_ref(), definition.start, definition.end),
         children,
     }
@@ -657,15 +663,29 @@ impl ParsedFile for ParsedTypeScriptFile {
     fn get_document_outline(
         &self,
         file: &SourceFile,
+        max_results: Option<usize>,
     ) -> Result<DocumentOutlineResult, SymbolPeekError> {
-        let symbols = self
-            .top_level_definitions()
-            .map(|definition| outline_node(self, file, definition))
-            .collect();
+        let mut remaining = bounded_max_results(max_results);
+        let mut truncated = false;
+        let mut symbols = Vec::new();
+        for definition in self.top_level_definitions() {
+            if remaining == 0 {
+                truncated = true;
+                break;
+            }
+            symbols.push(outline_node(
+                self,
+                file,
+                definition,
+                &mut remaining,
+                &mut truncated,
+            ));
+        }
         Ok(DocumentOutlineResult {
             supported: true,
             file: file.path.clone(),
             symbols,
+            truncated,
         })
     }
 

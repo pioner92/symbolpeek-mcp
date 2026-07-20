@@ -232,7 +232,6 @@ pub struct CallHierarchyResult {
 pub struct DocumentOutlineNode {
     pub name: String,
     pub kind: SymbolKind,
-    pub file: PathBuf,
     pub lines: LineRange,
     pub children: Vec<DocumentOutlineNode>,
 }
@@ -242,6 +241,8 @@ pub struct DocumentOutlineResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbols: Vec<DocumentOutlineNode>,
+    /// True when the total node budget omitted the rest of the outline.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -353,6 +354,14 @@ pub struct DiagnosticsRequest {
     pub path: String,
     #[schemars(description = "Optional symbol to scope diagnostics to")]
     pub symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct DocumentOutlineRequest {
+    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    pub path: String,
+    #[schemars(description = "Maximum total outline nodes; defaults to 200 and is capped at 1000")]
+    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

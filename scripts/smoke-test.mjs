@@ -192,8 +192,12 @@ try {
     name: "get_document_outline",
     arguments: { path: fixture },
   });
-  if (outline.result.isError || !(outline.result.structuredContent?.symbols?.length > 0)) {
+  const outlineContent = outline.result.structuredContent;
+  if (outline.result.isError || !(outlineContent?.symbols?.length > 0)) {
     throw new Error("get_document_outline did not return symbols");
+  }
+  if (outlineContent.symbols[0].file !== undefined || outlineContent.truncated !== false) {
+    throw new Error("get_document_outline did not return the compact bounded schema");
   }
 
   const callees = await request("tools/call", {

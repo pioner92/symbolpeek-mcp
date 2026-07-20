@@ -14,10 +14,10 @@ use crate::{
     },
     types::{
         CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
-        DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineResult,
-        FileRequest, ImplementationsResult, ListSymbolsResult, LocationRequest, ReadSymbolResult,
-        ReferencesResult, SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult,
-        SymbolRequest, TypeInfoResult,
+        DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineRequest,
+        DocumentOutlineResult, FileRequest, ImplementationsResult, ListSymbolsResult,
+        LocationRequest, ReadSymbolResult, ReferencesResult, SearchSymbolsRequest,
+        SearchSymbolsResult, SymbolContextResult, SymbolRequest, TypeInfoResult,
     },
 };
 
@@ -414,7 +414,7 @@ impl SymbolPeekServer {
     )]
     async fn get_document_outline(
         &self,
-        Parameters(request): Parameters<FileRequest>,
+        Parameters(request): Parameters<DocumentOutlineRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
@@ -423,7 +423,7 @@ impl SymbolPeekServer {
             .parse_file(&request.path)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: DocumentOutlineResult = parsed
-            .get_document_outline(&file)
+            .get_document_outline(&file, request.max_results)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))

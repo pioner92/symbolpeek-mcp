@@ -188,6 +188,7 @@ pub trait ParsedFile: Send + Sync {
     fn get_document_outline(
         &self,
         _file: &SourceFile,
+        _max_results: Option<usize>,
     ) -> Result<DocumentOutlineResult, SymbolPeekError> {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "get_document_outline".to_owned(),

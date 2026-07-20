@@ -168,12 +168,14 @@ optional `max_results` limit.
 
 Return a nested declaration tree for the file, including class methods,
 object methods, and nested functions. Unlike `list_symbols`, this preserves
-declaration nesting. It has no result cap and repeats the file path on outline
-nodes, so an unusually large generated file can still produce a large result.
+declaration nesting. The file path appears only once at the top level because
+every node belongs to that file. The total node limit defaults to 200, is
+capped at 1000, and sets `truncated: true` when declarations are omitted.
 
 ```json
 {
-  "path": "/project/src/chat.tsx"
+  "path": "/project/src/chat.tsx",
+  "max_results": 200
 }
 ```
 

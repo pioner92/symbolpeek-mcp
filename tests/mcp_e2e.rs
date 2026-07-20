@@ -318,9 +318,15 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": fixture_path()}),
     ));
     let outline = client.receive();
-    assert!(outline["result"]["structuredContent"]["symbols"]
+    let outline_structured = &outline["result"]["structuredContent"];
+    assert!(outline_structured["symbols"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["name"] == "sendMessage")));
+    assert_eq!(outline_structured["truncated"], false);
+    assert!(outline_structured["symbols"]
+        .as_array()
+        .and_then(|items| items.first())
+        .is_some_and(|item| item.get("file").is_none()));
 
     client.send(&call(
         "find_callees",
