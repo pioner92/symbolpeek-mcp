@@ -475,6 +475,7 @@ fn parse_kind(kind: &str) -> SymbolKind {
         "interface" => SymbolKind::Interface,
         "type" => SymbolKind::Type,
         "enum" => SymbolKind::Enum,
+        "enum_member" => SymbolKind::EnumMember,
         "namespace" => SymbolKind::Namespace,
         "reexport" => SymbolKind::Reexport,
         _ => SymbolKind::Unknown,

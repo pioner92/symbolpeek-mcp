@@ -14,6 +14,15 @@ fn sample_file() -> SourceFile {
     }
 }
 
+fn screens_file() -> SourceFile {
+    SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/screens.ts"),
+        source: Arc::from(include_str!("fixtures/navigation/screens.ts")),
+        extension: "ts".to_owned(),
+    }
+}
+
 #[test]
 fn lists_only_top_level_symbols_with_ast_kinds() {
     let file = sample_file();
@@ -70,6 +79,61 @@ fn reads_exported_and_nested_symbols_from_exact_spans() {
         .read_symbol(&file, "sendMessage.normalize")
         .expect("nested symbol should exist");
     assert!(nested.source.starts_with("function normalize()"));
+}
+
+#[test]
+fn reads_qualified_enum_members_without_promoting_them_to_top_level() {
+    let file = screens_file();
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("enum fixture should parse");
+
+    let list = parsed.list_symbols(&file, None, None);
+    assert_eq!(
+        list.symbols
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Screens"]
+    );
+
+    let member = parsed
+        .read_symbol(&file, "Screens.PUBLISH_ACKNOWLEDGEMENT")
+        .expect("qualified enum member should resolve");
+    assert_eq!(member.symbol, "Screens.PUBLISH_ACKNOWLEDGEMENT");
+    assert_eq!(member.kind, symbolpeek::types::SymbolKind::EnumMember);
+    assert_eq!(
+        member.source,
+        "PUBLISH_ACKNOWLEDGEMENT = \"publishAcknowledgement\""
+    );
+    assert_eq!(member.lines.start, 4);
+    assert_eq!(
+        parsed
+            .read_symbol(&file, "Screens.LOADING")
+            .expect("implicit enum member should resolve")
+            .source,
+        "LOADING"
+    );
+    assert_eq!(
+        parsed
+            .read_symbol(&file, "Screens.RETRY_COUNT")
+            .expect("numeric enum member should resolve")
+            .source,
+        "RETRY_COUNT = 3"
+    );
+
+    let outline = parsed
+        .get_document_outline(&file, None)
+        .expect("enum outline should resolve");
+    let screens = outline
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "Screens")
+        .expect("outline should contain Screens");
+    assert!(screens.children.iter().any(|child| {
+        child.name == "PUBLISH_ACKNOWLEDGEMENT"
+            && child.kind == symbolpeek::types::SymbolKind::EnumMember
+    }));
 }
 
 #[test]

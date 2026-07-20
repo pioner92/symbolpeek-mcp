@@ -270,8 +270,20 @@ function visit(node, scope, topLevel, parent) {
   }
 
   if (ts.isEnumDeclaration(node)) {
-    addDefinition(nameOf(node.name), node, node.name, "enum", "type", scope, topLevel);
-    visitChildren(node, scope, false);
+    const name = nameOf(node.name);
+    addDefinition(name, node, node.name, "enum", "type", scope, topLevel);
+    const memberScope = name ? [...scope, name] : scope;
+    for (const member of node.members) {
+      addDefinition(
+        nameOf(member.name),
+        member,
+        member.name,
+        "enum_member",
+        "constant",
+        memberScope,
+        false,
+      );
+    }
     return;
   }
 
@@ -362,7 +374,9 @@ function bindingsIn(node) {
 
 function propertyAccessName(node) {
   if (!ts.isPropertyAccessExpression(node)) return undefined;
-  const left = ts.isIdentifier(node.expression) ? node.expression.text : undefined;
+  const left = ts.isIdentifier(node.expression)
+    ? node.expression.text
+    : propertyAccessName(node.expression);
   return left ? `${left}.${node.name.text}` : undefined;
 }
 
@@ -565,6 +579,10 @@ function targetPosition(service, symbol) {
   let position;
   function visit(node) {
     if (position !== undefined) return;
+    if (propertyAccessName(node) === symbol) {
+      position = node.name.getStart(sourceFile);
+      return;
+    }
     if (ts.isIdentifier(node) && node.text === symbol) {
       position = node.getStart(sourceFile);
       return;
@@ -759,7 +777,12 @@ function searchDefinitionsInFile(file) {
       return;
     }
     if (ts.isEnumDeclaration(node)) {
-      add(nameOf(node.name), node, node.name, "enum", scope);
+      const name = nameOf(node.name);
+      add(name, node, node.name, "enum", scope);
+      const memberScope = name ? [...scope, name] : scope;
+      for (const member of node.members) {
+        add(nameOf(member.name), member, member.name, "enum_member", memberScope);
+      }
       return;
     }
     if (ts.isModuleDeclaration(node)) {

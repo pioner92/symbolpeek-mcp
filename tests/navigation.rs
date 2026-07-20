@@ -6,7 +6,7 @@ use symbolpeek::{
     types::{
         CallDirection, CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult,
         DiagnosticsRequest, ImplementationsResult, LocationRequest, PagedSymbolRequest,
-        SearchSymbolsRequest,
+        SearchSymbolsRequest, SymbolKind,
     },
 };
 
@@ -325,6 +325,61 @@ fn searches_symbols_across_the_workspace() {
         .symbols
         .iter()
         .all(|symbol| symbol.name.to_lowercase().contains("useauth")));
+}
+
+#[test]
+fn searches_and_finds_references_for_qualified_enum_members() {
+    let file = fixture_file(
+        "screen_usage.ts",
+        "ts",
+        include_str!("fixtures/navigation/screen_usage.ts"),
+    );
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("enum usage fixture should parse");
+    let symbol = "Screens.PUBLISH_ACKNOWLEDGEMENT";
+    let references = parsed
+        .find_references(
+            &file,
+            &PagedSymbolRequest {
+                path: file.path.display().to_string(),
+                symbol: symbol.to_owned(),
+                max_results: None,
+                offset: None,
+            },
+        )
+        .expect("qualified enum references should resolve");
+    assert!(references.references.iter().any(|reference| {
+        reference.is_definition
+            && references.files[reference.file_idx].ends_with("navigation/screens.ts")
+            && reference.lines.start == 4
+    }));
+    assert_eq!(
+        references
+            .references
+            .iter()
+            .filter(|reference| {
+                !reference.is_definition
+                    && references.files[reference.file_idx].ends_with("navigation/screen_usage.ts")
+            })
+            .count(),
+        2
+    );
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/navigation");
+    let search = TypeScriptAdapter
+        .search_symbols(&SearchSymbolsRequest {
+            path: root.display().to_string(),
+            query: symbol.to_owned(),
+            kind: Some(SymbolKind::EnumMember),
+            max_results: None,
+        })
+        .expect("qualified enum search should resolve");
+    assert!(search.symbols.iter().any(|result| {
+        result.name == symbol
+            && result.kind == SymbolKind::EnumMember
+            && search.files[result.file_idx].ends_with("navigation/screens.ts")
+    }));
 }
 
 #[test]

@@ -21,6 +21,9 @@ Read the exact source code and metadata for one symbol.
 ```
 
 Returns the source, symbol kind, file path, and 1-based line range.
+Nested declarations use qualified names. TypeScript enum members are available
+as `EnumName.MemberName`, for example
+`Screens.PUBLISH_ACKNOWLEDGEMENT`; their kind is `enum_member`.
 
 ## `list_symbols`
 
@@ -36,8 +39,10 @@ List a bounded set of top-level symbols in one file.
 
 Nested symbols are not returned as top-level entries. Examples of qualified
 names used by other tools include `sendMessage.normalize` and
-`MessageStore.append`. The file path appears only at the top level. The symbol
-limit defaults to 200, is capped at 1000, and sets `truncated: true` when more
+`MessageStore.append`. Enum members likewise use qualified names such as
+`Screens.PUBLISH_ACKNOWLEDGEMENT`, but remain nested and do not appear in this
+top-level list. The file path appears only at the top level. The symbol limit
+defaults to 200, is capped at 1000, and sets `truncated: true` when more
 top-level declarations exist. When truncated, `next_offset` identifies the
 next page; pass it back as `offset`.
 
@@ -141,7 +146,7 @@ files.
 
 The optional `kind` filter accepts the same semantic kinds returned by the
 other tools, such as `function`, `react_component`, `hook`, `class`,
-`interface`, and `type`. Results include `files[]` and `fileIdx`; use
+`interface`, `type`, `enum`, and `enum_member`. Results include `files[]` and `fileIdx`; use
 `files[fileIdx]` to recover each declaration's path. The default limit is 200,
 the maximum is 1000, and `truncated` reports omitted matches.
 

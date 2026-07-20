@@ -175,6 +175,20 @@ fn diagnostics_fixture_path() -> String {
     )
 }
 
+fn screens_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/screens.ts",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+fn screen_usage_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/screen_usage.ts",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 #[test]
 fn starts_initializes_registers_tools_and_shuts_down() {
     let mut client = McpClientProcess::start();
@@ -285,6 +299,41 @@ fn handles_cross_file_navigation_requests() {
             .as_str()
             .is_some_and(|file| file.ends_with("navigation/auth.ts"))
     );
+
+    client.shutdown();
+}
+
+#[test]
+fn handles_qualified_enum_members() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+    let symbol = "Screens.PUBLISH_ACKNOWLEDGEMENT";
+
+    client.send(&call(
+        "read_symbol",
+        90,
+        &json!({"path": screens_fixture_path(), "symbol": symbol}),
+    ));
+    let read = client.receive();
+    let read_structured = &read["result"]["structuredContent"];
+    assert_eq!(read_structured["symbol"], symbol);
+    assert_eq!(read_structured["kind"], "enum_member");
+    assert_eq!(
+        read_structured["source"],
+        "PUBLISH_ACKNOWLEDGEMENT = \"publishAcknowledgement\""
+    );
+
+    client.send(&call(
+        "find_references",
+        91,
+        &json!({"path": screen_usage_fixture_path(), "symbol": symbol}),
+    ));
+    let references = client.receive();
+    let references_structured = &references["result"]["structuredContent"];
+    assert_indexed_items(references_structured, "references");
+    assert!(references_structured["references"]
+        .as_array()
+        .is_some_and(|items| items.len() >= 3));
 
     client.shutdown();
 }

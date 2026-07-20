@@ -156,7 +156,12 @@ The TypeScript provider detects symbols such as:
 - React components and hooks;
 - classes and class methods;
 - object methods;
-- interfaces, type aliases, enums, variables, and constants.
+- interfaces, type aliases, enums and qualified enum members, variables, and
+  constants.
+
+Enum members are addressed by qualified name, for example
+`Screens.PUBLISH_ACKNOWLEDGEMENT`. Symbol names are indexed; assigned string
+values remain literals and require text search.
 
 Parsing is performed by the official TypeScript Compiler API. SymbolPeek does
 not use regex, brace counting, tree-sitter, SWC, or a hand-written parser.

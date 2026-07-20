@@ -18,6 +18,7 @@ pub enum SymbolKind {
     Interface,
     Type,
     Enum,
+    EnumMember,
     Namespace,
     Reexport,
     Unknown,
