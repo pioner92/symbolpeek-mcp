@@ -755,10 +755,24 @@ function searchOutput(service) {
         start_column: start.character + 1,
         end_column: end.character + 1,
       });
-      if (matches.length >= maxResults) return { search_symbols: matches };
+      if (matches.length > maxResults) {
+        return { search_symbols: matches.slice(0, maxResults), truncated: true };
+      }
     }
   }
-  return { search_symbols: matches };
+  return { search_symbols: matches, truncated: false };
+}
+
+function navigationMaxResults() {
+  return Math.min(Math.max(Number(request.max_results || 200), 1), 1000);
+}
+
+function limitedResults(items) {
+  const maxResults = navigationMaxResults();
+  return {
+    items: items.slice(0, maxResults),
+    truncated: items.length > maxResults,
+  };
 }
 
 function definitionEntryAtPosition(service, position) {
@@ -868,16 +882,19 @@ function callerLocationAt(service, fileName, position) {
 
 function implementationsOutput(service, position) {
   const implementations = service.getImplementationAtPosition(currentFileName, position) || [];
+  const locations = implementations
+    .filter((implementation) => isSupportedSource(implementation.fileName))
+    .map((implementation) => locationForSpan(
+      implementation.fileName,
+      implementation.textSpan,
+      implementation.name || "implementation",
+      true,
+    ))
+    .filter(Boolean);
+  const limited = limitedResults(locations);
   return {
-    implementations: implementations
-      .filter((implementation) => isSupportedSource(implementation.fileName))
-      .map((implementation) => locationForSpan(
-        implementation.fileName,
-        implementation.textSpan,
-        implementation.name || "implementation",
-        true,
-      ))
-      .filter(Boolean),
+    implementations: limited.items,
+    truncated: limited.truncated,
     symbol_found: true,
   };
 }
@@ -982,6 +999,11 @@ function hierarchyOutput(service, position) {
   );
   if (!rootLocation) return { hierarchy_nodes: [], hierarchy_edges: [], symbol_found: false };
   const maxDepth = Math.min(Math.max(Number(request.depth || 2), 1), 8);
+  // Which edges to expand: "callees" or "callers" cut one side; anything else
+  // (including the default) traverses both, matching the historical behavior.
+  const direction = request.direction === "callees" || request.direction === "callers"
+    ? request.direction
+    : "both";
   // Keep a single call always consumable: cap total nodes and stop expanding
   // high-fan-in "hub" symbols (useTheme, formatters, …) whose caller subtree
   // would otherwise drag in most of the codebase.
@@ -1015,50 +1037,61 @@ function hierarchyOutput(service, position) {
   while (queue.length > 0) {
     const current = queue.shift();
     if (current.depth >= maxDepth) continue;
-    const callees = projectCalleeLocations(service, current.definition);
-    for (const callee of callees) {
-      const target = callee.definition;
-      const from = addNode(current.location);
-      const to = addNode(target);
-      if (from === null || to === null) continue;
-      edges.set(`${from}->${to}:callee`, { from, to, relation: "callee" });
-      if (!visited.has(to)) {
-        visited.add(to);
-        const targetFile = sourceFileFromProgram(service, target.file);
-        const targetPosition = targetFile
-          ? positionForLineColumn(targetFile, target.start_line, target.start_column)
-          : undefined;
-        const nextDefinition = targetPosition === undefined
-          ? undefined
-          : service.getDefinitionAtPosition(target.file, targetPosition);
-        queue.push({ location: target, definition: nextDefinition?.[0] || current.definition, depth: current.depth + 1 });
+    if (direction !== "callers") {
+      const callees = projectCalleeLocations(service, current.definition);
+      for (const callee of callees) {
+        const target = callee.definition;
+        const from = addNode(current.location);
+        const to = addNode(target);
+        if (from === null || to === null) continue;
+        edges.set(`${from}->${to}:callee`, { from, to, relation: "callee" });
+        if (!visited.has(to)) {
+          visited.add(to);
+          const targetFile = sourceFileFromProgram(service, target.file);
+          const targetPosition = targetFile
+            ? positionForLineColumn(targetFile, target.start_line, target.start_column)
+            : undefined;
+          const nextDefinition = targetPosition === undefined
+            ? undefined
+            : service.getDefinitionAtPosition(target.file, targetPosition);
+          queue.push({ location: target, definition: nextDefinition?.[0] || current.definition, depth: current.depth + 1 });
+        }
       }
     }
-    const references = service.getReferencesAtPosition(current.definition.fileName, current.definition.textSpan.start) || [];
-    const callSites = references.filter((reference) =>
-      isSupportedSource(reference.fileName) && isCallReference(reference.fileName, reference.textSpan.start));
-    // Hub guard: never expand the callers of a high-fan-in symbol (except the
-    // explicitly queried root). Keep the node, flag it, drop its caller subtree.
-    if (current.depth >= 1 && callSites.length > HUB_CALLER_LIMIT) {
-      const node = nodes.get(nodeId(current.location));
-      if (node) {
-        node.hub = true;
-        node.callers_elided = callSites.length;
+    if (direction !== "callees") {
+      const references = collectCallerReferences(
+        service,
+        current.location.symbol,
+        current.definition.fileName,
+        current.definition.textSpan.start,
+      );
+      const callSites = references.filter((reference) =>
+        isSupportedSource(reference.fileName)
+        && (isCallReference(reference.fileName, reference.textSpan.start)
+          || isJsxReference(reference.fileName, reference.textSpan.start)));
+      // Hub guard: never expand the callers of a high-fan-in symbol (except the
+      // explicitly queried root). Keep the node, flag it, drop its caller subtree.
+      if (current.depth >= 1 && callSites.length > HUB_CALLER_LIMIT) {
+        const node = nodes.get(nodeId(current.location));
+        if (node) {
+          node.hub = true;
+          node.callers_elided = callSites.length;
+        }
+        truncated = true;
+        continue;
       }
-      truncated = true;
-      continue;
-    }
-    for (const reference of callSites) {
-      const caller = callerLocationAt(service, reference.fileName, reference.textSpan.start);
-      if (!caller) continue;
-      const from = addNode(caller);
-      const to = addNode(current.location);
-      if (from === null || to === null) continue;
-      edges.set(`${from}->${to}:caller`, { from, to, relation: "caller" });
-      if (!visited.has(from)) {
-        visited.add(from);
-        const callerDefinition = service.getDefinitionAtPosition(caller.file, reference.textSpan.start)?.[0];
-        queue.push({ location: caller, definition: callerDefinition || current.definition, depth: current.depth + 1 });
+      for (const reference of callSites) {
+        const caller = callerLocationAt(service, reference.fileName, reference.textSpan.start);
+        if (!caller) continue;
+        const from = addNode(caller);
+        const to = addNode(current.location);
+        if (from === null || to === null) continue;
+        edges.set(`${from}->${to}:caller`, { from, to, relation: "caller" });
+        if (!visited.has(from)) {
+          visited.add(from);
+          const callerDefinition = service.getDefinitionAtPosition(caller.file, reference.textSpan.start)?.[0];
+          queue.push({ location: caller, definition: callerDefinition || current.definition, depth: current.depth + 1 });
+        }
       }
     }
   }
@@ -1105,29 +1138,34 @@ function navigationOutput() {
   if (request.operation === "find_implementations") return implementationsOutput(service, position);
   if (request.operation === "find_callees") {
     const definition = definitionEntryAtPosition(service, position);
+    const callees = definition ? projectCalleeLocations(service, definition) : [];
+    const limited = limitedResults(callees);
     return {
-      callees: definition ? projectCalleeLocations(service, definition) : [],
+      callees: limited.items,
+      truncated: limited.truncated,
       symbol_found: true,
     };
   }
   if (request.operation === "get_call_hierarchy") return hierarchyOutput(service, position);
   const references = service.getReferencesAtPosition(currentFileName, position) || [];
   if (request.operation === "find_references") {
+    const locations = references
+      .filter((reference) => isSupportedSource(reference.fileName))
+      .map((reference) => locationForSpan(
+        reference.fileName,
+        reference.textSpan,
+        symbol,
+        isDefinitionReference(service, reference),
+      ))
+      .filter(Boolean);
+    const limited = limitedResults(locations);
     return {
-      references: references
-        .filter((reference) => isSupportedSource(reference.fileName))
-        .map((reference) => locationForSpan(
-          reference.fileName,
-          reference.textSpan,
-          symbol,
-          isDefinitionReference(service, reference),
-        ))
-        .filter(Boolean),
+      references: limited.items,
+      truncated: limited.truncated,
       symbol_found: true,
     };
   }
-  return {
-    callers: collectCallerReferences(service, symbol, position)
+  const callers = collectCallerReferences(service, symbol, currentFileName, position)
       .filter((reference) => isSupportedSource(reference.fileName))
       .filter((reference) =>
         isCallReference(reference.fileName, reference.textSpan.start)
@@ -1143,20 +1181,26 @@ function navigationOutput() {
           ? { ...location, caller: callerAt(reference.fileName, reference.textSpan.start) }
           : undefined;
       })
-      .filter(Boolean),
+      .filter(Boolean);
+  const limited = limitedResults(callers);
+  return {
+    callers: limited.items,
+    truncated: limited.truncated,
     symbol_found: true,
   };
 }
 
 // References that count as callers of `symbol`: its own references plus those of
 // a trivial wrapper binding (`const Foo = memo(FooComponent)`), deduplicated.
-function collectCallerReferences(service, symbol, position) {
-  const base = service.getReferencesAtPosition(currentFileName, position) || [];
-  const current = projectSourceFile(currentFileName);
+// Works for any file so the call hierarchy resolves callers the same way
+// `find_callers` does, including memo/forwardRef-wrapped JSX components.
+function collectCallerReferences(service, symbol, fileName, position) {
+  const base = service.getReferencesAtPosition(fileName, position) || [];
+  const source = projectSourceFile(fileName);
   const targetLeaf = symbol.split(".").pop();
-  const wrapperPosition = current ? wrapperBindingPosition(current, targetLeaf) : undefined;
+  const wrapperPosition = source ? wrapperBindingPosition(source, targetLeaf) : undefined;
   if (wrapperPosition === undefined) return base;
-  const wrapperReferences = service.getReferencesAtPosition(currentFileName, wrapperPosition) || [];
+  const wrapperReferences = service.getReferencesAtPosition(fileName, wrapperPosition) || [];
   const seen = new Set();
   const combined = [];
   for (const reference of [...base, ...wrapperReferences]) {

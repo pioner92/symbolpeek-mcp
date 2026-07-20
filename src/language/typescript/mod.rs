@@ -21,13 +21,15 @@ use crate::{
         CallHierarchyEdge, CallHierarchyNode, CallHierarchyRequest, CallHierarchyResult,
         CalleeLocation, CalleesResult, DependencyResult, Diagnostic, DiagnosticsRequest,
         DiagnosticsResult, DocumentOutlineNode, DocumentOutlineResult, ImplementationsResult,
-        LineRange, ListSymbolsResult, LocationRequest, ReadSymbolResult, SearchSymbol,
-        SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult, SymbolInfo, SymbolKind,
-        TypeInfoResult,
+        IndexedSymbolLocation, LineRange, ListSymbolsResult, LocationRequest, ReadSymbolResult,
+        SearchSymbol, SearchSymbolsRequest, SearchSymbolsResult, SymbolContextResult, SymbolInfo,
+        SymbolKind, TypeInfoResult,
     },
 };
 
 const WORKER_SCRIPT: &str = include_str!("worker.js");
+const DEFAULT_MAX_RESULTS: usize = 200;
+const MAX_RESULTS: usize = 1000;
 
 pub struct TypeScriptAdapter;
 
@@ -49,6 +51,7 @@ impl LanguageAdapter for TypeScriptAdapter {
         request: &SearchSymbolsRequest,
     ) -> Result<SearchSymbolsResult, SymbolPeekError> {
         let root = crate::filesystem::resolve_input_path(&request.path)?;
+        let max_results = bounded_max_results(request.max_results);
         let response = run_worker(
             &WorkerRequest {
                 path: root.display().to_string(),
@@ -62,21 +65,26 @@ impl LanguageAdapter for TypeScriptAdapter {
                 workspace_root: Some(root.display().to_string()),
                 query: Some(request.query.clone()),
                 kind: request.kind,
-                max_results: request.max_results,
+                max_results: Some(max_results),
+                direction: None,
             },
             &root,
         )?;
+        let mut files = FileTable::default();
+        let symbols = response
+            .search_symbols
+            .into_iter()
+            .map(|symbol| search_symbol(symbol, &mut files))
+            .filter(|symbol| request.kind.is_none_or(|kind| kind == symbol.kind))
+            .take(max_results)
+            .collect();
         Ok(SearchSymbolsResult {
             supported: true,
             root,
             query: request.query.clone(),
-            symbols: response
-                .search_symbols
-                .into_iter()
-                .map(search_symbol)
-                .filter(|symbol| request.kind.is_none_or(|kind| kind == symbol.kind))
-                .take(request.max_results.unwrap_or(200).min(1000))
-                .collect(),
+            files: files.into_paths(),
+            symbols,
+            truncated: response.truncated,
         })
     }
 
@@ -94,6 +102,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             query: None,
             kind: None,
             max_results: None,
+            direction: None,
         };
         let response = run_worker(&request, &file.path)?;
         Ok(Box::new(ParsedTypeScriptFile {
@@ -111,6 +120,8 @@ impl LanguageAdapter for TypeScriptAdapter {
             file,
             "get_diagnostics",
             request.symbol.clone(),
+            None,
+            None,
             None,
             None,
             None,
@@ -141,6 +152,8 @@ struct WorkerRequest {
     kind: Option<SymbolKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_results: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    direction: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +188,32 @@ struct WorkerResponse {
 
 fn default_symbol_found() -> bool {
     true
+}
+
+fn bounded_max_results(value: Option<usize>) -> usize {
+    value.unwrap_or(DEFAULT_MAX_RESULTS).clamp(1, MAX_RESULTS)
+}
+
+#[derive(Debug, Default)]
+struct FileTable {
+    paths: Vec<PathBuf>,
+    indices: BTreeMap<PathBuf, usize>,
+}
+
+impl FileTable {
+    fn intern(&mut self, path: PathBuf) -> usize {
+        if let Some(index) = self.indices.get(&path) {
+            return *index;
+        }
+        let index = self.paths.len();
+        self.indices.insert(path.clone(), index);
+        self.paths.push(path);
+        index
+    }
+
+    fn into_paths(self) -> Vec<PathBuf> {
+        self.paths
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,6 +372,7 @@ struct ParsedTypeScriptFile {
 }
 
 impl ParsedTypeScriptFile {
+    #[allow(clippy::too_many_arguments)]
     fn run_navigation(
         file: &SourceFile,
         operation: &str,
@@ -340,6 +380,8 @@ impl ParsedTypeScriptFile {
         line: Option<usize>,
         column: Option<usize>,
         depth: Option<usize>,
+        max_results: Option<usize>,
+        direction: Option<&'static str>,
     ) -> Result<WorkerResponse, SymbolPeekError> {
         run_worker(
             &WorkerRequest {
@@ -358,7 +400,8 @@ impl ParsedTypeScriptFile {
                 ),
                 query: None,
                 kind: None,
-                max_results: None,
+                max_results,
+                direction,
             },
             &file.path,
         )
@@ -424,11 +467,11 @@ fn parse_category(category: &str) -> Category {
     }
 }
 
-fn search_symbol(symbol: WorkerSearchSymbol) -> SearchSymbol {
+fn search_symbol(symbol: WorkerSearchSymbol, files: &mut FileTable) -> SearchSymbol {
     SearchSymbol {
         name: symbol.name,
         kind: parse_kind(&symbol.kind),
-        file: PathBuf::from(symbol.file),
+        file_idx: files.intern(PathBuf::from(symbol.file)),
         lines: LineRange {
             start: symbol.start_line,
             end: symbol.end_line,
@@ -691,6 +734,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
+            Some(bounded_max_results(request.max_results)),
+            None,
         )?;
         if !response.symbol_found {
             return Err(SymbolPeekError::SymbolNotFound {
@@ -698,15 +743,19 @@ impl ParsedFile for ParsedTypeScriptFile {
                 symbol: request.symbol.clone(),
             });
         }
+        let mut files = FileTable::default();
+        let references = response
+            .references
+            .into_iter()
+            .map(|location| indexed_reference_location(location, &mut files))
+            .collect();
         Ok(crate::types::ReferencesResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            references: response
-                .references
-                .into_iter()
-                .map(reference_location)
-                .collect(),
+            files: files.into_paths(),
+            references,
+            truncated: response.truncated,
         })
     }
 
@@ -722,6 +771,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
+            Some(bounded_max_results(request.max_results)),
+            None,
         )?;
         if !response.symbol_found {
             return Err(SymbolPeekError::SymbolNotFound {
@@ -729,11 +780,19 @@ impl ParsedFile for ParsedTypeScriptFile {
                 symbol: request.symbol.clone(),
             });
         }
+        let mut files = FileTable::default();
+        let callers = response
+            .callers
+            .into_iter()
+            .map(|location| indexed_caller_location(location, &mut files))
+            .collect();
         Ok(crate::types::CallersResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            callers: response.callers.into_iter().map(caller_location).collect(),
+            files: files.into_paths(),
+            callers,
+            truncated: response.truncated,
         })
     }
 
@@ -749,6 +808,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             Some(line),
             Some(column),
+            None,
+            None,
             None,
         )?;
         let definition = response
@@ -778,6 +839,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
+            Some(bounded_max_results(request.max_results)),
+            None,
         )?;
         if !response.symbol_found {
             return Err(SymbolPeekError::SymbolNotFound {
@@ -785,15 +848,19 @@ impl ParsedFile for ParsedTypeScriptFile {
                 symbol: request.symbol.clone(),
             });
         }
+        let mut files = FileTable::default();
+        let implementations = response
+            .implementations
+            .into_iter()
+            .map(|location| indexed_reference_location(location, &mut files))
+            .collect();
         Ok(ImplementationsResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            implementations: response
-                .implementations
-                .into_iter()
-                .map(reference_location)
-                .collect(),
+            files: files.into_paths(),
+            implementations,
+            truncated: response.truncated,
         })
     }
 
@@ -808,6 +875,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             Some(request.line),
             Some(request.column),
+            None,
+            None,
             None,
         )?;
         let type_info = response
@@ -840,6 +909,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
+            Some(bounded_max_results(request.max_results)),
+            None,
         )?;
         if !response.symbol_found {
             return Err(SymbolPeekError::SymbolNotFound {
@@ -847,11 +918,19 @@ impl ParsedFile for ParsedTypeScriptFile {
                 symbol: request.symbol.clone(),
             });
         }
+        let mut files = FileTable::default();
+        let callees = response
+            .callees
+            .into_iter()
+            .map(|location| indexed_callee_location(location, &mut files))
+            .collect();
         Ok(CalleesResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
-            callees: response.callees.into_iter().map(callee_location).collect(),
+            files: files.into_paths(),
+            callees,
+            truncated: response.truncated,
         })
     }
 
@@ -867,6 +946,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             request.depth,
+            None,
+            request.worker_direction(),
         )?;
         if !response.symbol_found {
             return Err(SymbolPeekError::SymbolNotFound {
@@ -945,6 +1026,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
             None,
             None,
+            None,
+            None,
         )?;
         Ok(DiagnosticsResult {
             supported: true,
@@ -973,9 +1056,29 @@ fn definition_location(location: WorkerLocation) -> crate::types::SymbolLocation
     reference_location(location)
 }
 
-fn caller_location(location: WorkerCallerLocation) -> crate::types::CallerLocation {
+fn indexed_reference_location(
+    location: WorkerLocation,
+    files: &mut FileTable,
+) -> IndexedSymbolLocation {
+    IndexedSymbolLocation {
+        file_idx: files.intern(PathBuf::from(location.file)),
+        symbol: location.symbol,
+        lines: LineRange {
+            start: location.start_line,
+            end: location.end_line,
+        },
+        start_column: location.start_column,
+        end_column: location.end_column,
+        is_definition: location.is_definition,
+    }
+}
+
+fn indexed_caller_location(
+    location: WorkerCallerLocation,
+    files: &mut FileTable,
+) -> crate::types::CallerLocation {
     crate::types::CallerLocation {
-        file: PathBuf::from(location.file),
+        file_idx: files.intern(PathBuf::from(location.file)),
         caller: location.caller,
         lines: LineRange {
             start: location.start_line,
@@ -986,17 +1089,20 @@ fn caller_location(location: WorkerCallerLocation) -> crate::types::CallerLocati
     }
 }
 
-fn callee_location(location: WorkerCallee) -> CalleeLocation {
+fn indexed_callee_location(location: WorkerCallee, files: &mut FileTable) -> CalleeLocation {
+    let file_idx = files.intern(PathBuf::from(location.location.file.clone()));
     CalleeLocation {
         callee: location.callee,
-        file: PathBuf::from(location.location.file),
+        file_idx,
         lines: LineRange {
             start: location.location.start_line,
             end: location.location.end_line,
         },
         start_column: location.location.start_column,
         end_column: location.location.end_column,
-        definition: location.definition.map(reference_location),
+        definition: location
+            .definition
+            .map(|definition| indexed_reference_location(definition, files)),
     }
 }
 

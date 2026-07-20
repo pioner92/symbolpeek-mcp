@@ -4,8 +4,8 @@ use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
     types::{
-        CallHierarchyRequest, DiagnosticsRequest, LocationRequest, SearchSymbolsRequest,
-        SymbolRequest,
+        CallDirection, CallHierarchyRequest, CallHierarchyResult, DiagnosticsRequest,
+        LocationRequest, SearchSymbolsRequest, SymbolRequest,
     },
 };
 
@@ -36,23 +36,27 @@ fn finds_cross_file_references_and_callers() {
     let request = SymbolRequest {
         path: file.path.display().to_string(),
         symbol: "useAuth".to_owned(),
+        max_results: None,
     };
 
     let references = parsed
         .find_references(&file, &request)
         .expect("references should resolve");
     assert!(references.references.iter().any(|reference| {
-        reference.file.ends_with("navigation/auth.ts") && reference.is_definition
+        references.files[reference.file_idx].ends_with("navigation/auth.ts")
+            && reference.is_definition
     }));
     assert!(references.references.iter().any(|reference| {
-        reference.file.ends_with("navigation/dashboard.tsx") && !reference.is_definition
+        references.files[reference.file_idx].ends_with("navigation/dashboard.tsx")
+            && !reference.is_definition
     }));
 
     let callers = parsed
         .find_callers(&file, &request)
         .expect("callers should resolve");
     assert!(callers.callers.iter().any(|caller| {
-        caller.caller == "Dashboard" && caller.file.ends_with("navigation/dashboard.tsx")
+        callers.files[caller.file_idx].ends_with("navigation/dashboard.tsx")
+            && caller.caller == "Dashboard"
     }));
 }
 
@@ -70,6 +74,7 @@ fn finds_component_callers_through_a_memo_wrapper_and_jsx() {
     let request = SymbolRequest {
         path: file.path.display().to_string(),
         symbol: "WidgetComponent".to_owned(),
+        max_results: None,
     };
     let callers = parsed
         .find_callers(&file, &request)
@@ -136,10 +141,9 @@ fn searches_symbols_across_the_workspace() {
             max_results: None,
         })
         .expect("workspace search should resolve");
-    assert!(result
-        .symbols
-        .iter()
-        .any(|symbol| symbol.name == "useAuth" && symbol.file.ends_with("navigation/auth.ts")));
+    assert!(result.symbols.iter().any(|symbol| {
+        symbol.name == "useAuth" && result.files[symbol.file_idx].ends_with("navigation/auth.ts")
+    }));
     // The query must actually filter: every match contains the substring, and
     // unrelated symbols are excluded (regression for the ignored-query bug).
     assert!(!result.symbols.is_empty());
@@ -165,17 +169,16 @@ fn finds_interface_implementations() {
             &SymbolRequest {
                 path: file.path.display().to_string(),
                 symbol: "Repository".to_owned(),
+                max_results: None,
             },
         )
         .expect("implementations should resolve");
-    assert!(result
-        .implementations
-        .iter()
-        .any(|item| item.file.ends_with("contracts.ts") && item.lines.start == 5));
-    assert!(result
-        .implementations
-        .iter()
-        .any(|item| item.file.ends_with("contracts.ts") && item.lines.start == 11));
+    assert!(result.implementations.iter().any(|item| {
+        result.files[item.file_idx].ends_with("contracts.ts") && item.lines.start == 5
+    }));
+    assert!(result.implementations.iter().any(|item| {
+        result.files[item.file_idx].ends_with("contracts.ts") && item.lines.start == 11
+    }));
 }
 
 #[test]
@@ -241,6 +244,7 @@ fn finds_direct_callees() {
             &SymbolRequest {
                 path: file.path.display().to_string(),
                 symbol: "sendMessage".to_owned(),
+                max_results: None,
             },
         )
         .expect("callees should resolve");
@@ -305,6 +309,7 @@ fn builds_bounded_call_hierarchy() {
                 path: file.path.display().to_string(),
                 symbol: "sendMessage".to_owned(),
                 depth: Some(2),
+                direction: None,
             },
         )
         .expect("call hierarchy should resolve");
@@ -324,6 +329,121 @@ fn builds_bounded_call_hierarchy() {
         .iter()
         .all(|edge| edge.from_idx < result.nodes.len() && edge.to_idx < result.nodes.len()));
     assert_eq!(result.files[result.nodes[0].file_idx], file.path);
+}
+
+#[test]
+#[allow(clippy::similar_names)] // callee/caller are the domain terms
+fn call_hierarchy_direction_cuts_a_single_side() {
+    use std::collections::BTreeSet;
+
+    let file = fixture_file("sample.tsx", "tsx", include_str!("fixtures/sample.tsx"));
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("sample fixture should parse");
+
+    let hierarchy = |direction: Option<CallDirection>| {
+        parsed
+            .get_call_hierarchy(
+                &file,
+                &CallHierarchyRequest {
+                    path: file.path.display().to_string(),
+                    symbol: "sendMessage".to_owned(),
+                    depth: Some(2),
+                    direction,
+                },
+            )
+            .expect("call hierarchy should resolve")
+    };
+
+    // Compare edges by resolved symbol names so the sets are stable even though
+    // node indices differ between traversals.
+    let edges = |result: &CallHierarchyResult| {
+        result
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    result.nodes[edge.from_idx].symbol.clone(),
+                    result.nodes[edge.to_idx].symbol.clone(),
+                    edge.relation.clone(),
+                )
+            })
+            .collect::<BTreeSet<_>>()
+    };
+
+    let both = hierarchy(None);
+    let callee_graph = hierarchy(Some(CallDirection::Callees));
+    let caller_graph = hierarchy(Some(CallDirection::Callers));
+
+    // A single-direction graph carries only its own relation and the same root.
+    assert!(callee_graph
+        .edges
+        .iter()
+        .all(|edge| edge.relation == "callee"));
+    assert!(caller_graph
+        .edges
+        .iter()
+        .all(|edge| edge.relation == "caller"));
+    assert_eq!(callee_graph.nodes[callee_graph.root].symbol, "sendMessage");
+    assert_eq!(caller_graph.nodes[caller_graph.root].symbol, "sendMessage");
+
+    // The callee cut still resolves the downward tree we expect.
+    assert!(callee_graph
+        .nodes
+        .iter()
+        .any(|node| node.symbol == "validateInput"));
+    assert!(!callee_graph.edges.is_empty());
+
+    // Additivity: while the full graph is untruncated, each single-direction
+    // edge set is a subset of the matching-relation slice of `both`. It is a
+    // subset, not an equality: `both` can reach callee edges through nodes only
+    // discovered via the caller side, which the callee-only cut never visits.
+    if !both.truncated {
+        let both_edges = edges(&both);
+        let downward_slice = both_edges
+            .iter()
+            .filter(|(_, _, relation)| relation == "callee")
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let upward_slice = both_edges
+            .iter()
+            .filter(|(_, _, relation)| relation == "caller")
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert!(edges(&callee_graph).is_subset(&downward_slice));
+        assert!(edges(&caller_graph).is_subset(&upward_slice));
+    }
+}
+
+#[test]
+fn call_hierarchy_resolves_memo_wrapped_jsx_callers() {
+    let file = SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/memo_widget.tsx"),
+        source: Arc::from(include_str!("fixtures/navigation/memo_widget.tsx")),
+        extension: "tsx".to_owned(),
+    };
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("memo fixture should parse");
+    let result = parsed
+        .get_call_hierarchy(
+            &file,
+            &CallHierarchyRequest {
+                path: file.path.display().to_string(),
+                symbol: "WidgetComponent".to_owned(),
+                depth: Some(2),
+                direction: Some(CallDirection::Callers),
+            },
+        )
+        .expect("call hierarchy should resolve");
+    // `Screen` renders `<Widget/>` where `Widget = memo(WidgetComponent)`; the
+    // caller traversal must follow the wrapper and JSX usage the same way
+    // `find_callers` does, not just plain call expressions.
+    assert!(result.nodes.iter().any(|node| node.symbol == "Screen"));
+    assert!(result.edges.iter().any(|edge| {
+        edge.relation == "caller" && result.nodes[edge.from_idx].symbol == "Screen"
+    }));
 }
 
 #[test]
@@ -349,6 +469,7 @@ fn compacts_and_bounds_large_call_hierarchies() {
                 path: file.path.display().to_string(),
                 symbol: "Target".to_owned(),
                 depth: None,
+                direction: None,
             },
         )
         .expect("large call hierarchy should resolve");

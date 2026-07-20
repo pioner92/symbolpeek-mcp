@@ -115,6 +115,37 @@ fn call(name: &str, id: u64, arguments: &Value) -> Value {
     })
 }
 
+fn assert_indexed_items(result: &Value, key: &str) {
+    assert!(result["files"].is_array());
+    assert!(result["truncated"].is_boolean());
+    assert!(result[key].as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            item["fileIdx"].as_u64().is_some_and(|index| {
+                index
+                    < result["files"]
+                        .as_array()
+                        .map_or(0, |files| files.len() as u64)
+            }) && item.get("file").is_none()
+        })
+    }));
+}
+
+fn assert_indexed_callees(result: &Value) {
+    assert_indexed_items(result, "callees");
+    assert!(result["callees"].as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            item.get("definition").is_none_or(|definition| {
+                definition["fileIdx"].as_u64().is_some_and(|index| {
+                    index
+                        < result["files"]
+                            .as_array()
+                            .map_or(0, |files| files.len() as u64)
+                }) && definition.get("file").is_none()
+            })
+        })
+    }));
+}
+
 fn fixture_path() -> String {
     format!("{}/tests/fixtures/sample.tsx", env!("CARGO_MANIFEST_DIR"))
 }
@@ -191,9 +222,28 @@ fn handles_cross_file_navigation_requests() {
         &json!({"path": path, "symbol": "useAuth"}),
     ));
     let references = client.receive();
-    assert!(references["result"]["structuredContent"]["references"]
+    let references_structured = &references["result"]["structuredContent"];
+    assert!(references_structured["references"]
         .as_array()
         .is_some_and(|items| items.len() >= 3));
+    assert_indexed_items(references_structured, "references");
+
+    client.send(&call(
+        "find_references",
+        43,
+        &json!({"path": path, "symbol": "useAuth", "max_results": 1}),
+    ));
+    let limited_references = client.receive();
+    assert_eq!(
+        limited_references["result"]["structuredContent"]["references"]
+            .as_array()
+            .map_or(0, Vec::len),
+        1
+    );
+    assert_eq!(
+        limited_references["result"]["structuredContent"]["truncated"],
+        true
+    );
 
     client.send(&call(
         "find_callers",
@@ -201,9 +251,11 @@ fn handles_cross_file_navigation_requests() {
         &json!({"path": navigation_fixture_path(), "symbol": "useAuth"}),
     ));
     let callers = client.receive();
-    assert!(callers["result"]["structuredContent"]["callers"]
+    let callers_structured = &callers["result"]["structuredContent"];
+    assert!(callers_structured["callers"]
         .as_array()
         .is_some_and(|items| { items.iter().any(|item| item["caller"] == "Dashboard") }));
+    assert_indexed_items(callers_structured, "callers");
 
     client.send(&call(
         "go_to_definition",
@@ -221,6 +273,7 @@ fn handles_cross_file_navigation_requests() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn handles_ast_intelligence_requests() {
     let mut client = McpClientProcess::start();
     let _ = client.initialize();
@@ -231,9 +284,11 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": navigation_workspace_path(), "query": "useAuth"}),
     ));
     let search = client.receive();
-    assert!(search["result"]["structuredContent"]["symbols"]
+    let search_structured = &search["result"]["structuredContent"];
+    assert!(search_structured["symbols"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["name"] == "useAuth")));
+    assert_indexed_items(search_structured, "symbols");
 
     client.send(&call(
         "get_type",
@@ -251,11 +306,11 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": contracts_fixture_path(), "symbol": "Repository"}),
     ));
     let implementations = client.receive();
-    assert!(
-        implementations["result"]["structuredContent"]["implementations"]
-            .as_array()
-            .is_some_and(|items| items.len() >= 2)
-    );
+    let implementations_structured = &implementations["result"]["structuredContent"];
+    assert!(implementations_structured["implementations"]
+        .as_array()
+        .is_some_and(|items| items.len() >= 2));
+    assert_indexed_items(implementations_structured, "implementations");
 
     client.send(&call(
         "get_document_outline",
@@ -273,9 +328,11 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": fixture_path(), "symbol": "sendMessage"}),
     ));
     let callees = client.receive();
-    assert!(callees["result"]["structuredContent"]["callees"]
+    let callees_structured = &callees["result"]["structuredContent"];
+    assert!(callees_structured["callees"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["callee"] == "validateInput")));
+    assert_indexed_callees(callees_structured);
 
     client.send(&call(
         "get_diagnostics",
@@ -324,6 +381,20 @@ fn handles_ast_intelligence_requests() {
             })
         })
     }));
+
+    client.send(&call(
+        "get_call_hierarchy",
+        67,
+        &json!({"path": fixture_path(), "symbol": "sendMessage", "depth": 2, "direction": "callees"}),
+    ));
+    let directed = client.receive();
+    let directed_content = &directed["result"]["structuredContent"];
+    assert!(directed_content["nodes"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["symbol"] == "sendMessage")));
+    assert!(directed_content["edges"]
+        .as_array()
+        .is_some_and(|edges| edges.iter().all(|edge| edge["relation"] == "callee")));
 
     client.shutdown();
 }

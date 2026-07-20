@@ -13,8 +13,9 @@ const BYTES_PER_ESTIMATED_TOKEN: i64 = 4;
 
 /// Human-readable explanation of how the reported numbers are derived.
 pub const STATISTICS_NOTE: &str =
-    "Estimates. 'avoided' = source bytes/lines of the files a request \
-consulted minus the response returned to the model; token savings assume ~4 bytes per token.";
+    "Directional estimate. Baseline = full source bytes/lines of distinct files represented by \
+each successful result; returned size = compact serialized semantic data with singular file-path \
+fields excluded; token savings assume ~4 bytes per token.";
 
 /// Source measurements used by the statistics collectors.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -41,16 +42,16 @@ impl SourceMetrics {
     }
 }
 
-/// One recorded request: the source the model would otherwise have read versus
-/// the compact response it actually received.
+/// One recorded request: a full-source counterfactual versus the compact
+/// semantic-result estimate.
 #[derive(Debug, Clone, Copy)]
 pub struct RequestSample {
-    /// Aggregate size of the distinct source files the request consulted.
+    /// Aggregate size of the distinct source files represented by the result.
     pub original: SourceMetrics,
-    /// Size of the serialized response returned to the model.
+    /// Size of the compact serialized semantic result used by the estimate.
     pub returned: SourceMetrics,
-    /// Number of distinct files the request answered from without the model
-    /// having to read them.
+    /// Number of distinct files represented by the result under the
+    /// full-source baseline.
     pub files: u64,
 }
 

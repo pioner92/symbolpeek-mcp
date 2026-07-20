@@ -98,10 +98,11 @@ impl SymbolPeekServer {
 
     /// Records one request against both statistics scopes.
     ///
-    /// `returned` is the size of the actual serialized response the model
-    /// receives; `original` is the aggregate size of every distinct source file
-    /// the request answered from (the primary file plus any files referenced in
-    /// the result). This is what the model would otherwise have had to read.
+    /// `returned` is a compact semantic-result estimate; `original` is the
+    /// aggregate size of every distinct source file represented by the request
+    /// (the primary file plus any files referenced in the result). Together they
+    /// form a directional full-source baseline, not a measurement of host token
+    /// accounting.
     fn record_request<T: serde::Serialize>(
         &self,
         primary: Option<&filesystem::SourceFile>,
@@ -137,7 +138,7 @@ impl SymbolPeekServer {
         let sample = RequestSample {
             original,
             returned,
-            files: u64::try_from(files.len().max(1)).unwrap_or(u64::MAX),
+            files: u64::try_from(files.len()).unwrap_or(u64::MAX),
         };
         self.statistics.record(sample);
         self.lifetime_statistics.record(sample);
@@ -161,8 +162,9 @@ fn strip_file_keys(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Collects every distinct source path referenced under a `"file"` key anywhere
-/// in a serialized result, so navigation results credit all files avoided.
+/// Collects every distinct source path referenced by either a singular `"file"`
+/// field or an interned `"files"` table, so compact navigation results still
+/// credit all files represented by the response.
 fn collect_files(
     value: &serde_json::Value,
     out: &mut std::collections::BTreeSet<std::path::PathBuf>,
@@ -173,6 +175,14 @@ fn collect_files(
                 if key == "file" {
                     if let serde_json::Value::String(path) = child {
                         out.insert(std::path::PathBuf::from(path));
+                    }
+                } else if key == "files" {
+                    if let serde_json::Value::Array(paths) = child {
+                        for path in paths {
+                            if let serde_json::Value::String(path) = path {
+                                out.insert(std::path::PathBuf::from(path));
+                            }
+                        }
                     }
                 }
                 collect_files(child, out);
@@ -681,7 +691,11 @@ fn format_bytes(bytes: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_compact;
+    use std::{collections::BTreeSet, path::PathBuf};
+
+    use serde_json::json;
+
+    use super::{collect_files, format_compact, strip_file_keys};
 
     #[test]
     fn formats_counts_compactly_and_trims_zeros() {
@@ -695,5 +709,42 @@ mod tests {
         assert_eq!(format_compact(1_000_000), "1M");
         assert_eq!(format_compact(2_500_000_000), "2.5B");
         assert_eq!(format_compact(-15_500), "-15.5K");
+    }
+
+    #[test]
+    fn collects_singular_and_interned_file_paths_for_statistics() {
+        let value = json!({
+            "file": "/project/src/query.ts",
+            "files": [
+                "/project/src/query.ts",
+                "/project/src/caller.ts",
+                "/project/src/caller.ts"
+            ],
+            "references": [{ "fileIdx": 1 }]
+        });
+        let mut files = BTreeSet::new();
+
+        collect_files(&value, &mut files);
+
+        assert_eq!(
+            files,
+            BTreeSet::from([
+                PathBuf::from("/project/src/caller.ts"),
+                PathBuf::from("/project/src/query.ts"),
+            ])
+        );
+    }
+
+    #[test]
+    fn statistics_payload_keeps_the_interned_file_table() {
+        let value = json!({
+            "file": "/project/src/query.ts",
+            "files": ["/project/src/query.ts", "/project/src/caller.ts"]
+        });
+
+        assert_eq!(
+            strip_file_keys(&value),
+            json!({ "files": ["/project/src/query.ts", "/project/src/caller.ts"] })
+        );
     }
 }

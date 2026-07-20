@@ -72,8 +72,20 @@ pub struct SymbolLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct IndexedSymbolLocation {
+    #[serde(rename = "fileIdx")]
+    pub file_idx: usize,
+    pub symbol: String,
+    pub lines: LineRange,
+    pub start_column: usize,
+    pub end_column: usize,
+    pub is_definition: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallerLocation {
-    pub file: PathBuf,
+    #[serde(rename = "fileIdx")]
+    pub file_idx: usize,
     pub caller: String,
     pub lines: LineRange,
     pub start_column: usize,
@@ -85,7 +97,9 @@ pub struct ReferencesResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbol: String,
-    pub references: Vec<SymbolLocation>,
+    pub files: Vec<PathBuf>,
+    pub references: Vec<IndexedSymbolLocation>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -93,7 +107,9 @@ pub struct CallersResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbol: String,
+    pub files: Vec<PathBuf>,
     pub callers: Vec<CallerLocation>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -109,7 +125,8 @@ pub struct DefinitionResult {
 pub struct SearchSymbol {
     pub name: String,
     pub kind: SymbolKind,
-    pub file: PathBuf,
+    #[serde(rename = "fileIdx")]
+    pub file_idx: usize,
     pub lines: LineRange,
     pub start_column: usize,
     pub end_column: usize,
@@ -120,7 +137,9 @@ pub struct SearchSymbolsResult {
     pub supported: bool,
     pub root: PathBuf,
     pub query: String,
+    pub files: Vec<PathBuf>,
     pub symbols: Vec<SearchSymbol>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -128,7 +147,9 @@ pub struct ImplementationsResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbol: String,
-    pub implementations: Vec<SymbolLocation>,
+    pub files: Vec<PathBuf>,
+    pub implementations: Vec<IndexedSymbolLocation>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -146,11 +167,12 @@ pub struct TypeInfoResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CalleeLocation {
     pub callee: String,
-    pub file: PathBuf,
+    #[serde(rename = "fileIdx")]
+    pub file_idx: usize,
     pub lines: LineRange,
     pub start_column: usize,
     pub end_column: usize,
-    pub definition: Option<SymbolLocation>,
+    pub definition: Option<IndexedSymbolLocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -158,7 +180,9 @@ pub struct CalleesResult {
     pub supported: bool,
     pub file: PathBuf,
     pub symbol: String,
+    pub files: Vec<PathBuf>,
     pub callees: Vec<CalleeLocation>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -251,6 +275,10 @@ pub struct SymbolRequest {
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
     pub symbol: String,
+    #[schemars(
+        description = "Maximum number of list results; defaults to 200 and is capped at 1000"
+    )]
+    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -275,6 +303,26 @@ pub struct SearchSymbolsRequest {
     pub max_results: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CallDirection {
+    Callees,
+    Callers,
+    Both,
+}
+
+impl CallDirection {
+    /// The token the worker expects; `None` keeps the request identical to the
+    /// historical undirectional call so existing `both` output is unchanged.
+    fn as_worker_arg(self) -> Option<&'static str> {
+        match self {
+            CallDirection::Callees => Some("callees"),
+            CallDirection::Callers => Some("callers"),
+            CallDirection::Both => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CallHierarchyRequest {
     #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
@@ -282,6 +330,17 @@ pub struct CallHierarchyRequest {
     pub symbol: String,
     #[schemars(description = "Traversal depth; defaults to 2")]
     pub depth: Option<usize>,
+    #[schemars(
+        description = "Which edges to traverse: callees, callers, or both; defaults to both"
+    )]
+    pub direction: Option<CallDirection>,
+}
+
+impl CallHierarchyRequest {
+    /// Worker `direction` argument, or `None` for the default both traversal.
+    pub fn worker_direction(&self) -> Option<&'static str> {
+        self.direction.and_then(CallDirection::as_worker_arg)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

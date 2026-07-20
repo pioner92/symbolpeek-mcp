@@ -15,9 +15,9 @@ Ask for the symbol you need—not the entire file.
 
 <p>
   <a href="#quick-start">Quick start</a> ·
-  <a href="#mcp-tools">MCP tools</a> ·
   <a href="#connect-to-codex">Connect to Codex</a> ·
-  <a href="#connect-to-claude-code">Connect to Claude Code</a>
+  <a href="#connect-to-claude-code">Connect to Claude Code</a> ·
+  <a href="MCP_TOOLS.md">Tool reference</a>
 </p>
 
 </div>
@@ -65,9 +65,9 @@ re-exports.*
 - **One symbol out of a large file.** `read_symbol` / `read_symbol_context`
   return a single declaration instead of a whole file. On large files this is
   the bulk of the token saving.
-- **Impact analysis without a grep loop.** `find_references` / `find_callers`
-  return each usage with its enclosing function and location in one call,
-  resolved through the project's module resolution — including path aliases
+- **Impact analysis without a grep loop.** `find_references` returns resolved
+  locations, while `find_callers` also identifies the enclosing functions in
+  one call. Both use the project's module resolution, including path aliases
   (`@app/...`) and barrel re-exports, which text search follows unreliably.
 - **Resolved types.** `get_type` returns the instantiated signature (for
   example `useAsync<FeedPermission, Error>`), which text search cannot produce.
@@ -85,13 +85,16 @@ re-exports.*
 
 **What makes the results trustworthy**
 
-- Answers come from the TypeScript compiler and AST, not heuristics, so they
-  are deterministic and reproducible across runs.
+- Parsing, source ranges, type information, and cross-file navigation come
+  from the TypeScript compiler and AST. Semantic labels such as `hook` and
+  `react_component` additionally use explicit naming and JSX conventions.
 - Cross-file results are only as complete as module resolution allows: with a
-  `tsconfig.json` they span the whole project; without one they cover the
-  target file and its imports.
-- When the project ships its own TypeScript, that version is used, so parsing
-  and resolution match what the project actually compiles with.
+  valid `tsconfig.json` they use its configured source set; without one they
+  cover the target file and recursively resolved static imports, exports, and
+  `require(...)` calls.
+- Compiler options come from the project `tsconfig.json`. The worker itself
+  uses the TypeScript runtime selected by `SYMBOLPEEK_TYPESCRIPT_ROOT`; the
+  release wrapper points this at SymbolPeek's locked runtime.
 
 ## Capabilities at a glance
 
@@ -150,6 +153,8 @@ The TypeScript provider detects symbols such as:
 
 Parsing is performed by the official TypeScript Compiler API. SymbolPeek does
 not use regex, brace counting, tree-sitter, SWC, or a hand-written parser.
+React component and hook classification follows naming and JSX conventions;
+it is a label applied on top of the compiler-derived syntax tree.
 
 Other languages are intentionally unsupported for now. Rust, C++, Swift, Go,
 and Python can be added later as independent language providers.
@@ -158,18 +163,20 @@ and Python can be added later as independent language providers.
 
 Requirements:
 
-- stable Rust;
+- Rust 1.82 or newer;
 - Node.js;
 - npm.
 
 From a checkout of the repository:
 
 ```sh
-npm ci
-cargo test
 sh scripts/build-release.sh
+cargo test
 node scripts/smoke-test.mjs target/release/symbolpeek
 ```
+
+`scripts/build-release.sh` installs the locked npm dependencies and builds both
+release executables.
 
 The release build creates two equivalent executables:
 
@@ -182,7 +189,7 @@ SymbolPeek communicates over stdio when used as an MCP server. It normally
 does not print a terminal interface; an MCP client starts it and exchanges
 JSON-RPC messages through stdin/stdout.
 
-## Install the CLI for any directory
+## Install command aliases globally
 
 On macOS or Linux, install the release binaries into a directory on your
 `PATH`:
@@ -197,11 +204,16 @@ export PATH="$HOME/.local/bin:$PATH"
 Add the `export PATH=...` line to your shell profile so it is available in
 future terminals.
 
-The same two binaries are installed by:
+The same two Rust binaries are installed by:
 
 ```sh
 cargo install --path .
 ```
+
+The `stats` command is self-contained. Semantic MCP operations additionally
+need the npm TypeScript runtime: use `scripts/run-release.sh`, or set
+`SYMBOLPEEK_TYPESCRIPT_ROOT` to a SymbolPeek checkout where `npm ci` has been
+run. `cargo install` does not install that JavaScript dependency.
 
 Use `symbolpeek` in documentation and automation. Use `sym` when you want a
 shorter command:
@@ -225,21 +237,24 @@ symbolpeek stats --reset
 `--reset` resets lifetime totals only. Session counters belong to the running
 MCP process and are available through `get_statistics()`.
 
-All numbers are estimates that describe context the agent did **not** have to
-read:
+All numbers compare SymbolPeek with a counterfactual full-source baseline:
 
 - **requests** — successful semantic calls;
-- **files avoided** — distinct source files answered from without the agent
-  opening them (one call, such as `find_callers`, can avoid several);
-- **bytes / lines avoided** — the size of the source files a request consulted
-  minus the response it returned;
+- **files avoided** — distinct source files represented by each result, summed
+  across calls (one `find_callers` request can count several files);
+- **bytes / lines avoided** — full contents of those files minus a compact
+  serialization of the semantic result; singular `file` path fields are
+  excluded from the response-size estimate, while interned `files[]` tables
+  remain included;
 - **estimated token savings** — avoided bytes at a fixed ~4 bytes/token
   heuristic, not a specific model's tokenization;
 - **average context reduction** — size-weighted across all requests.
 
 `get_statistics` returns both session and lifetime scopes plus a `note`
-describing this basis. Treat them as honest lower-bound estimates, not a claim
-about a particular model's tokenizer.
+describing this basis. Treat them as directional context-reduction estimates,
+not exact model-token counts or billing data. They do not model MCP envelope
+serialization, host caching, a particular tokenizer, or whether an agent would
+have used a targeted text search instead of reading every represented file.
 
 Lifetime data is stored as human-readable JSON in the platform configuration
 directory:
@@ -250,230 +265,21 @@ directory:
 | macOS | `~/Library/Application Support/SymbolPeek/stats.json` |
 | Windows | `%APPDATA%/SymbolPeek/stats.json` |
 
-Persistence failures are fail-closed: SymbolPeek continues operating normally
-and disables persistence for that run.
+Persistence failures disable on-disk updates for that run; in-memory counters
+and semantic tools continue operating normally.
 
-## MCP tools
+## Using the tools
 
 Absolute file paths are safest when used from an external MCP client. Relative
 paths are resolved against the MCP process working directory, or against
 `SYMBOLPEEK_WORKSPACE_ROOT` when that optional override is explicitly set.
 Supported files are parsed from their current contents for every request.
 
-### `read_symbol`
+Every tool's request shape, options, and response format is documented in the
+**[MCP tool reference](MCP_TOOLS.md)**.
 
-Read the exact source code and metadata for one symbol.
-
-```json
-{
-  "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage"
-}
-```
-
-Returns the source, symbol kind, file path, and 1-based line range.
-
-### `list_symbols`
-
-List all top-level symbols in one file.
-
-```json
-{
-  "path": "/project/src/chat.tsx"
-}
-```
-
-Nested symbols are not returned as top-level entries. Examples of qualified
-names used by other tools include `sendMessage.normalize` and
-`MessageStore.append`.
-
-### `find_dependencies`
-
-Find direct local symbols referenced by a symbol in the same project.
-
-```json
-{
-  "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage"
-}
-```
-
-Framework APIs, `node_modules`, and common external APIs are excluded from the
-result.
-
-### `find_references`
-
-Find project references to a symbol, including its definition.
-
-```json
-{
-  "path": "/project/src/auth.ts",
-  "symbol": "useAuth"
-}
-```
-
-Each result includes the file, symbol, line range, source columns, and whether
-the location is the definition.
-
-### `find_callers`
-
-Find call sites and their enclosing callers.
-
-```json
-{
-  "path": "/project/src/auth.ts",
-  "symbol": "useAuth"
-}
-```
-
-This is useful for impact analysis and refactoring questions such as “what
-breaks if I change this helper?”
-
-### `go_to_definition`
-
-Resolve a usage location to its definition through project imports.
-
-Line and column values are 1-based:
-
-```json
-{
-  "path": "/project/src/dashboard.tsx",
-  "line": 18,
-  "column": 27
-}
-```
-
-### `read_symbol_context`
-
-Return the requested symbol with minimal same-file context:
-
-1. the requested symbol;
-2. direct local helper functions;
-3. locally referenced types declared in the same file;
-4. locally referenced constants.
-
-It does not recursively include the whole project.
-
-### `search_symbols`
-
-Search a workspace directory for AST declarations by case-insensitive name or
-substring. This is workspace-wide discovery, not a persistent project index;
-the request scans only the supplied workspace and returns supported source
-files.
-
-```json
-{
-  "path": "/project",
-  "query": "useAuth",
-  "kind": "hook",
-  "max_results": 50
-}
-```
-
-The optional `kind` filter accepts the same semantic kinds returned by the
-other tools, such as `function`, `react_component`, `hook`, `class`,
-`interface`, and `type`.
-
-### `get_type`
-
-Return TypeScript Language Service hover information at a 1-based line and
-column. The result includes the displayed signature or inferred type,
-documentation when available, and the source location represented by the
-hover span.
-
-```json
-{
-  "path": "/project/src/dashboard.tsx",
-  "line": 18,
-  "column": 27
-}
-```
-
-### `find_implementations`
-
-Find classes or members that implement the interface, abstract class, or
-contract at the requested symbol.
-
-```json
-{
-  "path": "/project/src/contracts.ts",
-  "symbol": "Repository"
-}
-```
-
-### `get_document_outline`
-
-Return a nested declaration tree for the file, including class methods,
-object methods, and nested functions. Unlike `list_symbols`, this is intended
-as a compact structural overview.
-
-```json
-{
-  "path": "/project/src/chat.tsx"
-}
-```
-
-### `find_callees`
-
-Find direct project-local calls made by a symbol. Each call site includes the
-resolved project definition when the TypeScript Language Service can resolve
-it. Framework APIs, external packages, and unresolved library calls are
-excluded.
-
-```json
-{
-  "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage"
-}
-```
-
-### `get_diagnostics`
-
-Return TypeScript compiler syntactic and semantic diagnostics for a file. Set
-`symbol` to scope the response to the declaration span of one symbol. This is
-compiler feedback, not an ESLint or formatter replacement.
-
-```json
-{
-  "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage"
-}
-```
-
-### `get_call_hierarchy`
-
-Return a bounded call graph around a symbol. The response contains nodes and
-directed `caller` and `callee` edges. Set `depth` from 1 to 8; it defaults to
-2 so responses stay compact. File paths are interned once in the top-level
-`files` table. Each node uses `fileIdx`, and each edge uses `fromIdx` and
-`toIdx` as node indexes; join a node's `fileIdx` through `files` to recover
-the original path. The `truncated` flag is true when the bounded graph hit a
-node or hub limit.
-
-```json
-{
-  "path": "/project/src/chat.tsx",
-  "symbol": "sendMessage",
-  "depth": 2
-}
-```
-
-### `get_statistics`
-
-Return both session and lifetime context-avoidance statistics. The CLI shows
-lifetime statistics only because it runs as a separate process from the MCP
-server.
-
-Unsupported extensions return:
-
-```json
-{
-  "supported": false
-}
-```
-
-Missing files, parser failures, and unknown symbols are returned as MCP
-invalid-parameter errors.
+Unsupported extensions return `{ "supported": false }`. Missing files, parser
+failures, and unknown symbols are returned as MCP invalid-parameter errors.
 
 ## Connect to Codex
 
@@ -549,93 +355,13 @@ export SYMBOLPEEK_WORKSPACE_ROOT=/absolute/path/to/your/project
 export SYMBOLPEEK_TYPESCRIPT_ROOT=/absolute/path/to/symbolpeek
 ```
 
-## Architecture
+## Architecture & development
 
-The MCP layer knows only the provider interface. It does not contain
-TypeScript-specific syntax, AST traversal, or dependency logic.
-
-```text
-MCP client
-    │ stdio / JSON-RPC
-    ▼
-SymbolPeekServer
-    │
-    ├── SourceLoader       current filesystem snapshot
-    ├── LanguageRegistry   extension → provider
-    └── ParsedFile         language-neutral MCP operations
-            │
-            └── TypeScriptAdapter
-                    │ short-lived Node.js worker
-                    └── TypeScript Compiler API (project's or bundled)
-```
-
-The TypeScript provider keeps language-specific AST and Language Service logic
-inside its own implementation. Future providers for Rust, C++, Swift, Go, or
-Python can use completely different parsing technologies without changing MCP
-business logic.
-
-### Request lifecycle
-
-1. The server validates the file extension.
-2. The filesystem boundary reads the current source snapshot.
-3. The registry selects the language provider.
-4. The provider parses the file with its native technology.
-5. The MCP operation returns only the requested semantic result.
-6. Successful requests update lightweight session and lifetime statistics.
-
-There is no database, background scan, or persistent AST cache. For each
-request the provider detects the project root (nearest `tsconfig.json`,
-`jsconfig.json`, `package.json`, or `.git`) and, when the project ships its own
-TypeScript, loads that version so results match the project's compiler.
-Navigation then builds a TypeScript Language Service program from the project's
-source set (its `tsconfig.json` when present); without a `tsconfig` it falls
-back to the target file and its imported files. Nothing is cached between
-requests: every call sees the current source but pays the cost of building its
-program — cheap on a single file, heavier on a large project.
-
-## Project structure
-
-```text
-src/
-├── main.rs                        symbolpeek executable entry point
-├── lib.rs                         library crate root
-├── cli.rs                         shared CLI behavior
-├── bin/sym.rs                     short executable entry point
-├── server.rs                      MCP tools and transport boundary
-├── mcp.rs                         MCP response helpers
-├── filesystem.rs                  current source loading
-├── statistics.rs                  session and lifetime metrics
-├── types.rs                       MCP request and response types
-├── errors.rs                      error mapping
-└── language/
-    ├── mod.rs                     provider abstractions and registry
-    └── typescript/
-        ├── mod.rs                 Rust-side provider adapter
-        └── worker.js              official TypeScript API worker
-```
-
-## Development
-
-Install JavaScript dependencies and run the full verification suite:
-
-```sh
-npm ci
-cargo fmt --all -- --check
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-sh scripts/build-release.sh
-node scripts/smoke-test.mjs target/release/symbolpeek
-```
-
-Testing is layered:
-
-- provider tests validate AST-derived symbols and navigation;
-- golden tests cover TypeScript, JavaScript, React, Unicode, and edge cases;
-- filesystem tests cover current snapshots, missing files, UTF-8, and
-  permissions;
-- MCP end-to-end tests cover JSON-RPC startup, tool registration, valid and
-  invalid calls, concurrent requests, statistics, and shutdown;
-- release smoke tests exercise the actual optimized binary.
+SymbolPeek is built around a language-neutral MCP layer and a swappable
+TypeScript provider, with no database or persistent AST cache — every request
+reads the current source. The full design, request lifecycle, source layout,
+and contributor verification suite live in
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## Roadmap
 
