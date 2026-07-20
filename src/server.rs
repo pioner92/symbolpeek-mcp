@@ -539,7 +539,7 @@ fn print_lifetime_statistics(snapshot: crate::statistics::StatisticsSnapshot, us
     );
     print_metric(
         "Lines avoided:",
-        &format_integer(snapshot.lines_avoided),
+        &format_compact(snapshot.lines_avoided),
         use_color,
         LABEL_WIDTH,
     );
@@ -552,7 +552,7 @@ fn print_lifetime_statistics(snapshot: crate::statistics::StatisticsSnapshot, us
     println!();
     print_metric(
         "Estimated tokens:",
-        &format_integer(snapshot.estimated_token_savings),
+        &format_compact(snapshot.estimated_token_savings),
         use_color,
         LABEL_WIDTH,
     );
@@ -613,9 +613,31 @@ fn reduction_color(reduction: f64) -> &'static str {
     }
 }
 
-fn format_integer(value: i64) -> String {
+/// Formats a count compactly with a K/M/B suffix, trimming trailing zeros
+/// (for example 1,097,752 → "1.1M", 15,500 → "15.5K", 942 → "942").
+fn format_compact(value: i64) -> String {
     let sign = if value < 0 { "-" } else { "" };
-    format!("{sign}{}", group_digits(&value.unsigned_abs().to_string()))
+    let magnitude = value.unsigned_abs();
+    if magnitude < 1_000 {
+        return format!("{sign}{magnitude}");
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let (scaled, suffix) = if magnitude >= 1_000_000_000 {
+        (magnitude as f64 / 1_000_000_000.0, "B")
+    } else if magnitude >= 1_000_000 {
+        (magnitude as f64 / 1_000_000.0, "M")
+    } else {
+        (magnitude as f64 / 1_000.0, "K")
+    };
+    format!("{sign}{}{suffix}", trim_trailing_zeros(scaled))
+}
+
+fn trim_trailing_zeros(value: f64) -> String {
+    let formatted = format!("{value:.2}");
+    formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
 }
 
 fn format_unsigned(value: u64) -> String {
@@ -654,5 +676,24 @@ fn format_bytes(bytes: i64) -> String {
         format!("-{value:.1} {suffix}")
     } else {
         format!("{value:.1} {suffix}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_compact;
+
+    #[test]
+    fn formats_counts_compactly_and_trims_zeros() {
+        assert_eq!(format_compact(1), "1");
+        assert_eq!(format_compact(942), "942");
+        assert_eq!(format_compact(1_000), "1K");
+        assert_eq!(format_compact(15_500), "15.5K");
+        assert_eq!(format_compact(24_000), "24K");
+        assert_eq!(format_compact(1_097_752), "1.1M");
+        assert_eq!(format_compact(12_430_000), "12.43M");
+        assert_eq!(format_compact(1_000_000), "1M");
+        assert_eq!(format_compact(2_500_000_000), "2.5B");
+        assert_eq!(format_compact(-15_500), "-15.5K");
     }
 }
