@@ -985,7 +985,7 @@ function hierarchyOutput(service, position) {
   // Keep a single call always consumable: cap total nodes and stop expanding
   // high-fan-in "hub" symbols (useTheme, formatters, …) whose caller subtree
   // would otherwise drag in most of the codebase.
-  const NODE_BUDGET = 200;
+  const NODE_BUDGET = 120;
   const HUB_CALLER_LIMIT = 40;
   const nodes = new Map();
   const edges = new Map();

@@ -874,26 +874,61 @@ impl ParsedFile for ParsedTypeScriptFile {
                 symbol: request.symbol.clone(),
             });
         }
+
+        let hierarchy_nodes = response.hierarchy_nodes;
+        let root_id = hierarchy_nodes.first().map(|node| node.id.clone());
+        let mut files = Vec::new();
+        let mut file_indices = BTreeMap::new();
+        let mut node_indices = BTreeMap::new();
+        let nodes = hierarchy_nodes
+            .into_iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let file_path = PathBuf::from(node.file);
+                let file_idx = if let Some(file_idx) = file_indices.get(&file_path) {
+                    *file_idx
+                } else {
+                    let file_idx = files.len();
+                    files.push(file_path.clone());
+                    file_indices.insert(file_path, file_idx);
+                    file_idx
+                };
+                node_indices.insert(node.id, index);
+                CallHierarchyNode {
+                    symbol: node.symbol,
+                    file_idx,
+                    lines: LineRange {
+                        start: node.start_line,
+                        end: node.end_line,
+                    },
+                    hub: node.hub,
+                    callers_elided: node.callers_elided,
+                }
+            })
+            .collect::<Vec<_>>();
+        let edges = response
+            .hierarchy_edges
+            .into_iter()
+            .filter_map(|edge| {
+                Some(CallHierarchyEdge {
+                    from_idx: *node_indices.get(&edge.from)?,
+                    to_idx: *node_indices.get(&edge.to)?,
+                    relation: edge.relation,
+                })
+            })
+            .collect();
+        let root = root_id
+            .and_then(|root_id| node_indices.get(&root_id).copied())
+            .unwrap_or_default();
         Ok(CallHierarchyResult {
             supported: true,
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             depth: request.depth.unwrap_or(2).clamp(1, 8),
-            root: response
-                .hierarchy_nodes
-                .first()
-                .map(|node| node.id.clone())
-                .unwrap_or_default(),
-            nodes: response
-                .hierarchy_nodes
-                .into_iter()
-                .map(hierarchy_node)
-                .collect(),
-            edges: response
-                .hierarchy_edges
-                .into_iter()
-                .map(hierarchy_edge)
-                .collect(),
+            root,
+            files,
+            nodes,
+            edges,
             truncated: response.truncated,
         })
     }
@@ -962,28 +997,6 @@ fn callee_location(location: WorkerCallee) -> CalleeLocation {
         start_column: location.location.start_column,
         end_column: location.location.end_column,
         definition: location.definition.map(reference_location),
-    }
-}
-
-fn hierarchy_node(node: WorkerHierarchyNode) -> CallHierarchyNode {
-    CallHierarchyNode {
-        id: node.id,
-        symbol: node.symbol,
-        file: PathBuf::from(node.file),
-        lines: LineRange {
-            start: node.start_line,
-            end: node.end_line,
-        },
-        hub: node.hub,
-        callers_elided: node.callers_elided,
-    }
-}
-
-fn hierarchy_edge(edge: WorkerHierarchyEdge) -> CallHierarchyEdge {
-    CallHierarchyEdge {
-        from: edge.from,
-        to: edge.to,
-        relation: edge.relation,
     }
 }
 

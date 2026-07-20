@@ -444,7 +444,11 @@ compiler feedback, not an ESLint or formatter replacement.
 
 Return a bounded call graph around a symbol. The response contains nodes and
 directed `caller` and `callee` edges. Set `depth` from 1 to 8; it defaults to
-2 so responses stay compact.
+2 so responses stay compact. File paths are interned once in the top-level
+`files` table. Each node uses `fileIdx`, and each edge uses `fromIdx` and
+`toIdx` as node indexes; join a node's `fileIdx` through `files` to recover
+the original path. The `truncated` flag is true when the bounded graph hit a
+node or hub limit.
 
 ```json
 {

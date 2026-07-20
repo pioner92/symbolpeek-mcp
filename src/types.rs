@@ -163,9 +163,9 @@ pub struct CalleesResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallHierarchyNode {
-    pub id: String,
     pub symbol: String,
-    pub file: PathBuf,
+    #[serde(rename = "fileIdx")]
+    pub file_idx: usize,
     pub lines: LineRange,
     /// True when this symbol has many callers (a hub) and its caller subtree was
     /// intentionally not expanded.
@@ -176,8 +176,10 @@ pub struct CallHierarchyNode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallHierarchyEdge {
-    pub from: String,
-    pub to: String,
+    #[serde(rename = "fromIdx")]
+    pub from_idx: usize,
+    #[serde(rename = "toIdx")]
+    pub to_idx: usize,
     pub relation: String,
 }
 
@@ -187,7 +189,10 @@ pub struct CallHierarchyResult {
     pub file: PathBuf,
     pub symbol: String,
     pub depth: usize,
-    pub root: String,
+    /// Index of the root node in `nodes`.
+    pub root: usize,
+    /// Interned file paths referenced by hierarchy nodes.
+    pub files: Vec<PathBuf>,
     pub nodes: Vec<CallHierarchyNode>,
     pub edges: Vec<CallHierarchyEdge>,
     /// True when traversal hit the node budget (or a hub) and the graph is a

@@ -293,9 +293,37 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": fixture_path(), "symbol": "sendMessage", "depth": 2}),
     ));
     let hierarchy = client.receive();
-    assert!(hierarchy["result"]["structuredContent"]["nodes"]
+    let structured = &hierarchy["result"]["structuredContent"];
+    assert!(structured["nodes"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["symbol"] == "sendMessage")));
+    assert!(structured["files"].is_array());
+    assert!(structured["nodes"].as_array().is_some_and(|nodes| {
+        nodes.iter().all(|node| {
+            node["fileIdx"].as_u64().is_some_and(|file_idx| {
+                file_idx
+                    < structured["files"]
+                        .as_array()
+                        .map_or(0, |files| files.len() as u64)
+            }) && node.get("id").is_none()
+                && node.get("file").is_none()
+        })
+    }));
+    assert!(structured["edges"].as_array().is_some_and(|edges| {
+        edges.iter().all(|edge| {
+            edge["fromIdx"].as_u64().is_some_and(|from_idx| {
+                from_idx
+                    < structured["nodes"]
+                        .as_array()
+                        .map_or(0, |nodes| nodes.len() as u64)
+            }) && edge["toIdx"].as_u64().is_some_and(|to_idx| {
+                to_idx
+                    < structured["nodes"]
+                        .as_array()
+                        .map_or(0, |nodes| nodes.len() as u64)
+            })
+        })
+    }));
 
     client.shutdown();
 }

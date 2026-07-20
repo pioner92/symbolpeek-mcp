@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
 use symbolpeek::{
     filesystem::SourceFile,
@@ -313,4 +313,73 @@ fn builds_bounded_call_hierarchy() {
         .nodes
         .iter()
         .any(|node| node.symbol == "validateInput"));
+    assert_eq!(result.root, 0);
+    assert!(!result.files.is_empty());
+    assert!(result
+        .nodes
+        .iter()
+        .all(|node| node.file_idx < result.files.len()));
+    assert!(result
+        .edges
+        .iter()
+        .all(|edge| edge.from_idx < result.nodes.len() && edge.to_idx < result.nodes.len()));
+    assert_eq!(result.files[result.nodes[0].file_idx], file.path);
+}
+
+#[test]
+fn compacts_and_bounds_large_call_hierarchies() {
+    let mut source = String::from("function Target() { return null; }\n");
+    for index in 0..140 {
+        writeln!(source, "function Caller{index}() {{ return Target(); }}")
+            .expect("writing to an in-memory string should succeed");
+    }
+    let file = SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/generated_hierarchy.ts"),
+        source: Arc::from(source),
+        extension: "ts".to_owned(),
+    };
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("generated hierarchy fixture should parse");
+    let result = parsed
+        .get_call_hierarchy(
+            &file,
+            &CallHierarchyRequest {
+                path: file.path.display().to_string(),
+                symbol: "Target".to_owned(),
+                depth: None,
+            },
+        )
+        .expect("large call hierarchy should resolve");
+
+    assert!(
+        result.truncated,
+        "node budget should mark the result truncated"
+    );
+    assert!(result.nodes.len() <= 120);
+    assert_eq!(result.nodes[result.root].symbol, "Target");
+    assert!(result
+        .nodes
+        .iter()
+        .all(|node| node.file_idx < result.files.len()));
+    assert!(result
+        .edges
+        .iter()
+        .all(|edge| edge.from_idx < result.nodes.len() && edge.to_idx < result.nodes.len()));
+
+    let serialized = serde_json::to_string_pretty(&result).expect("hierarchy should serialize");
+    assert!(
+        serialized.len() <= 30 * 1024,
+        "hierarchy response is too large: {} bytes",
+        serialized.len()
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&serialized).expect("serialized hierarchy should be valid JSON");
+    assert!(json["files"].is_array());
+    assert!(json["nodes"][0].get("id").is_none());
+    assert!(json["nodes"][0].get("file").is_none());
+    assert!(json["nodes"][0].get("fileIdx").is_some());
+    assert!(json["edges"][0].get("fromIdx").is_some());
+    assert!(json["edges"][0].get("toIdx").is_some());
 }
