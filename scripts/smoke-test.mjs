@@ -146,6 +146,23 @@ try {
   }
   const toolByName = new Map(tools.result.tools.map((tool) => [tool.name, tool]));
   for (const name of [
+    "read_symbol", "list_symbols", "find_dependencies", "find_references", "find_callers",
+    "go_to_definition", "read_symbol_context", "get_type", "find_implementations",
+    "get_document_outline", "find_callees", "get_diagnostics", "get_call_hierarchy",
+  ]) {
+    const description = toolByName.get(name)?.inputSchema?.properties?.path?.description ?? "";
+    if (!description.includes("Exact existing")
+      || !description.includes("implicit index files are not resolved")) {
+      throw new Error(`${name} did not publish the exact source-file path contract`);
+    }
+  }
+  const searchPathDescription = toolByName.get("search_symbols")
+    ?.inputSchema?.properties?.path?.description ?? "";
+  if (!searchPathDescription.includes("Exact existing workspace directory path")
+    || searchPathDescription.includes("implicit index files")) {
+    throw new Error("search_symbols did not publish its workspace-directory path contract");
+  }
+  for (const name of [
     "search_symbols", "find_references", "find_callers", "find_callees", "find_implementations",
   ]) {
     const description = toolByName.get(name)?.description ?? "";

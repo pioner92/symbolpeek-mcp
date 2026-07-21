@@ -293,7 +293,9 @@ pub struct SymbolContextResult {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SymbolRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
     pub symbol: String,
@@ -301,7 +303,9 @@ pub struct SymbolRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PagedSymbolRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
     pub symbol: String,
@@ -313,7 +317,9 @@ pub struct PagedSymbolRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct LocationRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(description = "1-based source line containing the usage")]
     pub line: usize,
@@ -323,7 +329,9 @@ pub struct LocationRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SearchSymbolsRequest {
-    #[schemars(description = "Workspace directory to search")]
+    #[schemars(
+        description = "Exact existing workspace directory path, absolute or relative to the configured workspace root or process working directory."
+    )]
     pub path: String,
     #[schemars(description = "Case-insensitive symbol name or substring")]
     pub query: String,
@@ -357,7 +365,9 @@ impl CallDirection {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CallHierarchyRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     pub symbol: String,
     #[schemars(description = "Traversal depth; defaults to 2")]
@@ -377,7 +387,9 @@ impl CallHierarchyRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DiagnosticsRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(description = "Optional symbol to scope diagnostics to")]
     pub symbol: Option<String>,
@@ -391,7 +403,9 @@ pub struct DiagnosticsRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DocumentOutlineRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(description = "Maximum total outline nodes; defaults to 200 and is capped at 1000")]
     pub max_results: Option<usize>,
@@ -399,7 +413,9 @@ pub struct DocumentOutlineRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ListSymbolsRequest {
-    #[schemars(description = "Path to a .ts, .tsx, .js, or .jsx file")]
+    #[schemars(
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+    )]
     pub path: String,
     #[schemars(
         description = "Maximum number of top-level symbols; defaults to 200 and is capped at 1000"

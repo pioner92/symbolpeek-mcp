@@ -7,7 +7,12 @@ overview of what each tool answers, see the capability tables in the
 Absolute file paths are safest when used from an external MCP client. Relative
 paths are resolved against the MCP process working directory, or against
 `SYMBOLPEEK_WORKSPACE_ROOT` when that optional override is explicitly set.
-Supported files are parsed from their current contents for every request.
+File-based tools require the exact existing `.ts`, `.tsx`, `.js`, or `.jsx`
+source-file path. Their `path` parameter is not a TypeScript module specifier:
+module aliases, directory imports, implicit extensions, and implicit index files
+are not resolved. `search_symbols` is the exception: its `path` is an exact
+existing workspace directory. Supported files are parsed from their current
+contents for every request.
 
 ## `read_symbol`
 

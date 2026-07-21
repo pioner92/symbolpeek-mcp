@@ -287,6 +287,42 @@ fn screen_usage_fixture_path() -> String {
     )
 }
 
+fn assert_exact_path_schema_descriptions(tools: &[Value]) {
+    for name in [
+        "read_symbol",
+        "list_symbols",
+        "find_dependencies",
+        "find_references",
+        "find_callers",
+        "go_to_definition",
+        "read_symbol_context",
+        "get_type",
+        "find_implementations",
+        "get_document_outline",
+        "find_callees",
+        "get_diagnostics",
+        "get_call_hierarchy",
+    ] {
+        let path_description = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool.pointer("/inputSchema/properties/path/description"))
+            .and_then(Value::as_str)
+            .expect("file-based tool should describe its path input");
+        assert!(path_description.contains("Exact existing"));
+        assert!(path_description.contains("Module aliases"));
+        assert!(path_description.contains("implicit index files are not resolved"));
+    }
+    let search_path_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "search_symbols")
+        .and_then(|tool| tool.pointer("/inputSchema/properties/path/description"))
+        .and_then(Value::as_str)
+        .expect("search_symbols should describe its workspace path input");
+    assert!(search_path_description.contains("Exact existing workspace directory path"));
+    assert!(!search_path_description.contains("implicit index files"));
+}
+
 #[test]
 fn starts_initializes_registers_tools_and_shuts_down() {
     let mut client = McpClientProcess::start();
@@ -318,6 +354,8 @@ fn starts_initializes_registers_tools_and_shuts_down() {
     assert!(names.contains(&"get_diagnostics"));
     assert!(names.contains(&"get_call_hierarchy"));
     assert!(names.contains(&"get_statistics"));
+
+    assert_exact_path_schema_descriptions(tools);
 
     for name in [
         "search_symbols",
