@@ -130,6 +130,25 @@ fn assert_indexed_items(result: &Value, key: &str) {
     }));
 }
 
+fn assert_compact_indexed_rows(result: &Value, key: &str, expected_fields: &[&str]) {
+    assert!(result["files"].is_array());
+    assert_eq!(result["fields"], json!(expected_fields));
+    assert!(result["truncated"].is_boolean());
+    assert!(result[key].as_array().is_some_and(|items| {
+        items.iter().all(|item| {
+            item.as_array().is_some_and(|row| {
+                row.len() == expected_fields.len()
+                    && row[0].as_u64().is_some_and(|index| {
+                        index
+                            < result["files"]
+                                .as_array()
+                                .map_or(0, |files| files.len() as u64)
+                    })
+            })
+        })
+    }));
+}
+
 fn assert_indexed_callees(result: &Value) {
     assert_indexed_items(result, "callees");
     assert!(result["callees"].as_array().is_some_and(|items| {
@@ -237,10 +256,21 @@ fn handles_cross_file_navigation_requests() {
     ));
     let references = client.receive();
     let references_structured = &references["result"]["structuredContent"];
-    assert!(references_structured["references"]
+    assert!(references_structured["refs"]
         .as_array()
         .is_some_and(|items| items.len() >= 3));
-    assert_indexed_items(references_structured, "references");
+    assert_compact_indexed_rows(
+        references_structured,
+        "refs",
+        &[
+            "file",
+            "startLine",
+            "endLine",
+            "startCol",
+            "endCol",
+            "isDef",
+        ],
+    );
 
     client.send(&call(
         "find_references",
@@ -249,7 +279,7 @@ fn handles_cross_file_navigation_requests() {
     ));
     let limited_references = client.receive();
     assert_eq!(
-        limited_references["result"]["structuredContent"]["references"]
+        limited_references["result"]["structuredContent"]["refs"]
             .as_array()
             .map_or(0, Vec::len),
         1
@@ -270,7 +300,7 @@ fn handles_cross_file_navigation_requests() {
     ));
     let second_reference_page = client.receive();
     assert_eq!(
-        second_reference_page["result"]["structuredContent"]["references"]
+        second_reference_page["result"]["structuredContent"]["refs"]
             .as_array()
             .map_or(0, Vec::len),
         1
@@ -285,8 +315,19 @@ fn handles_cross_file_navigation_requests() {
     let callers_structured = &callers["result"]["structuredContent"];
     assert!(callers_structured["callers"]
         .as_array()
-        .is_some_and(|items| { items.iter().any(|item| item["caller"] == "Dashboard") }));
-    assert_indexed_items(callers_structured, "callers");
+        .is_some_and(|items| { items.iter().any(|item| item[1] == "Dashboard") }));
+    assert_compact_indexed_rows(
+        callers_structured,
+        "callers",
+        &[
+            "file",
+            "caller",
+            "startLine",
+            "endLine",
+            "startCol",
+            "endCol",
+        ],
+    );
 
     client.send(&call(
         "go_to_definition",
@@ -330,8 +371,19 @@ fn handles_qualified_enum_members() {
     ));
     let references = client.receive();
     let references_structured = &references["result"]["structuredContent"];
-    assert_indexed_items(references_structured, "references");
-    assert!(references_structured["references"]
+    assert_compact_indexed_rows(
+        references_structured,
+        "refs",
+        &[
+            "file",
+            "startLine",
+            "endLine",
+            "startCol",
+            "endCol",
+            "isDef",
+        ],
+    );
+    assert!(references_structured["refs"]
         .as_array()
         .is_some_and(|items| items.len() >= 3));
 
@@ -353,8 +405,20 @@ fn handles_ast_intelligence_requests() {
     let search_structured = &search["result"]["structuredContent"];
     assert!(search_structured["symbols"]
         .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["name"] == "useAuth")));
-    assert_indexed_items(search_structured, "symbols");
+        .is_some_and(|items| items.iter().any(|item| item[1] == "useAuth")));
+    assert_compact_indexed_rows(
+        search_structured,
+        "symbols",
+        &[
+            "file",
+            "name",
+            "kind",
+            "startLine",
+            "endLine",
+            "startCol",
+            "endCol",
+        ],
+    );
 
     client.send(&call(
         "get_type",
@@ -373,10 +437,28 @@ fn handles_ast_intelligence_requests() {
     ));
     let implementations = client.receive();
     let implementations_structured = &implementations["result"]["structuredContent"];
-    assert!(implementations_structured["implementations"]
+    assert!(implementations_structured["impls"]
         .as_array()
         .is_some_and(|items| items.len() >= 2));
-    assert_indexed_items(implementations_structured, "implementations");
+    assert!(implementations_structured["impls"]
+        .as_array()
+        .is_some_and(|items| {
+            items.iter().any(|item| item[1] == "MemoryRepository")
+                && items.iter().any(|item| item[1] == "CachedRepository")
+        }));
+    assert_compact_indexed_rows(
+        implementations_structured,
+        "impls",
+        &[
+            "file",
+            "symbol",
+            "startLine",
+            "endLine",
+            "startCol",
+            "endCol",
+            "isDef",
+        ],
+    );
 
     client.send(&call(
         "get_document_outline",
@@ -491,12 +573,17 @@ fn resolves_relative_paths_against_configured_workspace_root() {
     let structured = &response["result"]["structuredContent"];
     assert!(structured["symbols"]
         .as_array()
-        .is_some_and(|symbols| { symbols.iter().any(|symbol| symbol["name"] == "sendMessage") }));
+        .is_some_and(|symbols| { symbols.iter().any(|symbol| symbol[0] == "sendMessage") }));
+    assert_eq!(
+        structured["fields"],
+        json!(["name", "kind", "startLine", "endLine", "module"])
+    );
     assert_eq!(structured["truncated"], false);
     assert!(structured["symbols"]
         .as_array()
         .and_then(|symbols| symbols.first())
-        .is_some_and(|symbol| symbol.get("file").is_none()));
+        .and_then(Value::as_array)
+        .is_some_and(|symbol| symbol.len() == 5));
 
     client.shutdown();
 }

@@ -1003,12 +1003,21 @@ function implementationsOutput(service, position) {
   const implementations = service.getImplementationAtPosition(currentFileName, position) || [];
   const locations = implementations
     .filter((implementation) => isSupportedSource(implementation.fileName))
-    .map((implementation) => locationForSpan(
-      implementation.fileName,
-      implementation.textSpan,
-      implementation.name || "implementation",
-      true,
-    ))
+    .map((implementation) => {
+      const sourceFile = sourceFileFromProgram(service, implementation.fileName);
+      const spanName = sourceFile?.text
+        .slice(
+          implementation.textSpan.start,
+          implementation.textSpan.start + implementation.textSpan.length,
+        )
+        .trim();
+      return locationForSpan(
+        implementation.fileName,
+        implementation.textSpan,
+        implementation.name || spanName || "implementation",
+        true,
+      );
+    })
     .filter(Boolean);
   const limited = limitedResults(locations, compareLocations);
   return {

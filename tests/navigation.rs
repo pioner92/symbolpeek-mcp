@@ -409,6 +409,15 @@ fn finds_interface_implementations() {
     assert!(result.implementations.iter().any(|item| {
         result.files[item.file_idx].ends_with("contracts.ts") && item.lines.start == 11
     }));
+    let implementation_names = result
+        .implementations
+        .iter()
+        .map(|item| item.symbol.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        implementation_names,
+        std::collections::BTreeSet::from(["CachedRepository", "MemoryRepository"])
+    );
 
     let exact_page = parsed
         .find_implementations(

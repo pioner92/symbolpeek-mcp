@@ -130,9 +130,10 @@ re-exports.*
 Flat bounded tools (`list_symbols`, references, callers, callees,
 implementations, and diagnostics) support `offset` pagination. A truncated
 page includes `next_offset`; pass it to the next request. Cross-file pages use
-page-local `files[]` tables, so join `fileIdx` before combining pages. Workspace
-`search_symbols`, nested outlines, and call graphs remain deliberately bounded
-without offset pagination.
+page-local `files[]` tables; for compact tuple responses, the `file` position
+declared by `fields` indexes that table. Workspace `search_symbols`, nested
+outlines, and call graphs remain deliberately bounded without offset
+pagination.
 
 ### Statistics
 

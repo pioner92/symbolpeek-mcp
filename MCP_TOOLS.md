@@ -43,7 +43,19 @@ names used by other tools include `sendMessage.normalize` and
 `Screens.PUBLISH_ACKNOWLEDGEMENT`, but remain nested and do not appear in this
 top-level list. The file path appears only at the top level. The symbol limit
 defaults to 200, is capped at 1000, and sets `truncated: true` when more
-top-level declarations exist. When truncated, `next_offset` identifies the
+top-level declarations exist. Results are compact tuple rows whose positions
+are declared once by `fields`:
+
+```json
+{
+  "file": "/project/src/chat.tsx",
+  "fields": ["name", "kind", "startLine", "endLine", "module"],
+  "symbols": [["sendMessage", "function", 10, 24, null]],
+  "truncated": false
+}
+```
+
+`module` is non-null only for re-exports. When truncated, `next_offset` identifies the
 next page; pass it back as `offset`.
 
 ## `find_dependencies`
@@ -72,16 +84,27 @@ Find project references to a symbol, including its definition.
 }
 ```
 
-Each result includes the symbol, line range, source columns, and whether the
-location is the definition. List results use a top-level `files` table and
-`fileIdx` indexes instead of repeating absolute paths; resolve a path as
-`files[fileIdx]`. `find_references`, `find_callers`, `find_callees`, and
-`find_implementations` accept optional `max_results` (default 200, capped at
-1000) and `offset` (default 0). When another page exists, they return
-`truncated: true` and `next_offset`; pass that value back as `offset`. Each page
-has its own `files` table, so resolve `fileIdx` before combining pages.
-`search_symbols` supports the same result limit and `truncated` flag but is not
-offset-paginated yet.
+References are returned as compact tuple rows. `fields` defines each position
+once, and the integer in the `file` position indexes the top-level `files`
+table. `isDef` is `1` for the definition and `0` for an ordinary reference:
+
+```json
+{
+  "symbol": "useAuth",
+  "files": ["/project/src/auth.ts", "/project/src/dashboard.tsx"],
+  "fields": ["file", "startLine", "endLine", "startCol", "endCol", "isDef"],
+  "refs": [[0, 5, 5, 14, 21, 1], [1, 18, 18, 27, 34, 0]],
+  "truncated": false
+}
+```
+
+`find_references`, `find_callers`, and `find_implementations` accept optional
+`max_results` (default 200, capped at 1000) and `offset` (default 0). When
+another page exists, they return `truncated: true` and `next_offset`; pass that
+value back as `offset`. Each page has its own `files` table, so resolve the
+`file` tuple position before combining pages. `find_callees` keeps the object
+format and its existing `next_offset` field. `search_symbols` supports the same
+result limit and `truncated` flag but is not offset-paginated yet.
 
 ## `find_callers`
 
@@ -99,6 +122,10 @@ breaks if I change this helper?”
 
 Both ordinary calls (`useAuth()`) and component renders (`<MyComponent />` or
 `<MyComponent></MyComponent>`) count as caller relationships.
+
+Results use `fields` equal to
+`["file", "caller", "startLine", "endLine", "startCol", "endCol"]`; each
+entry in `callers` is a tuple in that order.
 
 ## `go_to_definition`
 
@@ -146,9 +173,11 @@ files.
 
 The optional `kind` filter accepts the same semantic kinds returned by the
 other tools, such as `function`, `react_component`, `hook`, `class`,
-`interface`, `type`, `enum`, and `enum_member`. Results include `files[]` and `fileIdx`; use
-`files[fileIdx]` to recover each declaration's path. The default limit is 200,
-the maximum is 1000, and `truncated` reports omitted matches.
+`interface`, `type`, `enum`, and `enum_member`. Results use compact `symbols`
+tuples with `fields` equal to
+`["file", "name", "kind", "startLine", "endLine", "startCol", "endCol"]`.
+The integer `file` position indexes `files[]`. The default limit is 200, the
+maximum is 1000, and `truncated` reports omitted matches.
 
 ## `get_type`
 
@@ -177,8 +206,10 @@ contract at the requested symbol.
 }
 ```
 
-Results use the shared `files[]`/`fileIdx` representation and support optional
-`max_results` and `offset` pagination fields.
+Results use compact `impls` tuples with `fields` equal to
+`["file", "symbol", "startLine", "endLine", "startCol", "endCol", "isDef"]`.
+The integer `file` position indexes `files[]`; `isDef` is encoded as `1` or
+`0`. The tool supports optional `max_results` and `offset` pagination fields.
 
 ## `get_document_outline`
 

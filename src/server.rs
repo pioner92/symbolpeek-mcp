@@ -226,7 +226,9 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&result))
     }
 
-    #[tool(description = "List bounded top-level symbols in one TypeScript or JavaScript file.")]
+    #[tool(
+        description = "List bounded top-level symbols in one TypeScript or JavaScript file. Returns compact tuple rows; the fields array defines each position."
+    )]
     async fn list_symbols(
         &self,
         Parameters(request): Parameters<ListSymbolsRequest>,
@@ -239,8 +241,9 @@ impl SymbolPeekServer {
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ListSymbolsResult =
             parsed.list_symbols(&file, request.max_results, request.offset);
-        self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_list_symbols(&result);
+        self.record_request(Some(&file), &compact);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
@@ -264,7 +267,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find all project references to a TypeScript or JavaScript symbol, including its definition."
+        description = "Find all project references to a TypeScript or JavaScript symbol, including its definition. Returns compact refs tuple rows; the fields array defines each position."
     )]
     async fn find_references(
         &self,
@@ -279,12 +282,13 @@ impl SymbolPeekServer {
         let result: ReferencesResult = parsed
             .find_references(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_references(&result);
+        self.record_request(Some(&file), &compact);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
-        description = "Find project call sites and enclosing callers for a TypeScript or JavaScript symbol."
+        description = "Find project call sites and enclosing callers for a TypeScript or JavaScript symbol. Returns compact callers tuple rows; the fields array defines each position."
     )]
     async fn find_callers(
         &self,
@@ -299,8 +303,9 @@ impl SymbolPeekServer {
         let result: CallersResult = parsed
             .find_callers(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_callers(&result);
+        self.record_request(Some(&file), &compact);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
@@ -344,7 +349,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Search symbols across a TypeScript or JavaScript workspace without reading every file."
+        description = "Search symbols across a TypeScript or JavaScript workspace without reading every file. Returns compact symbols tuple rows; the fields array defines each position."
     )]
     async fn search_symbols(
         &self,
@@ -367,12 +372,13 @@ impl SymbolPeekServer {
         let result: SearchSymbolsResult = adapter
             .search_symbols(&normalized)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_request(None, &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_search_symbols(&result);
+        self.record_request(None, &compact);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
-        description = "Find TypeScript or JavaScript implementations of an interface, class, or abstract contract."
+        description = "Find TypeScript or JavaScript implementations of an interface, class, or abstract contract. Returns compact impls tuple rows; the fields array defines each position."
     )]
     async fn find_implementations(
         &self,
@@ -387,8 +393,9 @@ impl SymbolPeekServer {
         let result: ImplementationsResult = parsed
             .find_implementations(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_implementations(&result);
+        self.record_request(Some(&file), &compact);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
