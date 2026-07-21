@@ -136,7 +136,7 @@ pub trait ParsedFile: Send + Sync {
         })
     }
 
-    /// Finds direct project callees of a symbol.
+    /// Finds direct named calls made by a symbol, including unresolved targets.
     ///
     /// # Errors
     ///

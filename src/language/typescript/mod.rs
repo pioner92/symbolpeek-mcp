@@ -52,6 +52,7 @@ impl LanguageAdapter for TypeScriptAdapter {
     ) -> Result<SearchSymbolsResult, SymbolPeekError> {
         let root = crate::filesystem::resolve_input_path(&request.path)?;
         let max_results = bounded_max_results(request.max_results);
+        let offset = request.offset.unwrap_or_default();
         let response = run_worker(
             &WorkerRequest {
                 path: root.display().to_string(),
@@ -66,7 +67,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                 query: Some(request.query.clone()),
                 kind: request.kind,
                 max_results: Some(max_results),
-                offset: None,
+                offset: Some(offset),
                 direction: None,
             },
             &root,
@@ -76,9 +77,8 @@ impl LanguageAdapter for TypeScriptAdapter {
             .search_symbols
             .into_iter()
             .map(|symbol| search_symbol(symbol, &mut files))
-            .filter(|symbol| request.kind.is_none_or(|kind| kind == symbol.kind))
-            .take(max_results)
-            .collect();
+            .collect::<Vec<_>>();
+        let next_offset = next_offset(Some(offset), symbols.len(), response.truncated);
         Ok(SearchSymbolsResult {
             supported: true,
             root,
@@ -86,6 +86,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             files: files.into_paths(),
             symbols,
             truncated: response.truncated,
+            next_offset,
         })
     }
 
@@ -129,20 +130,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             request.offset,
             None,
         )?;
-        let diagnostics = response
-            .diagnostics
-            .into_iter()
-            .map(diagnostic)
-            .collect::<Vec<_>>();
-        let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
-        Ok(DiagnosticsResult {
-            supported: true,
-            file: file.path.clone(),
-            symbol: request.symbol.clone(),
-            diagnostics,
-            truncated: response.truncated,
-            next_offset,
-        })
+        diagnostics_result(file, request, response)
     }
 }
 
@@ -209,6 +197,33 @@ fn bounded_max_results(value: Option<usize>) -> usize {
 
 fn next_offset(offset: Option<usize>, returned: usize, truncated: bool) -> Option<usize> {
     truncated.then(|| offset.unwrap_or_default().saturating_add(returned))
+}
+
+fn diagnostics_result(
+    file: &SourceFile,
+    request: &DiagnosticsRequest,
+    response: WorkerResponse,
+) -> Result<DiagnosticsResult, SymbolPeekError> {
+    if request.symbol.is_some() && !response.symbol_found {
+        return Err(SymbolPeekError::SymbolNotFound {
+            path: file.path.clone(),
+            symbol: request.symbol.clone().unwrap_or_default(),
+        });
+    }
+    let diagnostics = response
+        .diagnostics
+        .into_iter()
+        .map(diagnostic)
+        .collect::<Vec<_>>();
+    let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
+    Ok(DiagnosticsResult {
+        supported: true,
+        file: file.path.clone(),
+        symbol: request.symbol.clone(),
+        diagnostics,
+        truncated: response.truncated,
+        next_offset,
+    })
 }
 
 #[derive(Debug, Default)]
@@ -296,9 +311,8 @@ struct WorkerHierarchyNode {
 
 #[derive(Debug, Deserialize)]
 struct WorkerHierarchyEdge {
-    from: String,
-    to: String,
-    relation: String,
+    caller: String,
+    callee: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,10 +579,21 @@ impl ParsedTypeScriptFile {
                 symbol: symbol.to_owned(),
                 candidates: candidates.join(", "),
             }),
-            Resolution::NotFound => Err(SymbolPeekError::SymbolNotFound {
-                path: file.path.clone(),
-                symbol: symbol.to_owned(),
-            }),
+            Resolution::NotFound => {
+                if let Some((parent, member)) = symbol.rsplit_once('.') {
+                    if self.definition(parent).is_some() {
+                        return Err(SymbolPeekError::SymbolMemberNotFound {
+                            path: file.path.clone(),
+                            parent: parent.to_owned(),
+                            member: member.to_owned(),
+                        });
+                    }
+                }
+                Err(SymbolPeekError::SymbolNotFound {
+                    path: file.path.clone(),
+                    symbol: symbol.to_owned(),
+                })
+            }
         }
     }
 
@@ -1079,9 +1104,8 @@ impl ParsedFile for ParsedTypeScriptFile {
             .into_iter()
             .filter_map(|edge| {
                 Some(CallHierarchyEdge {
-                    from_idx: *node_indices.get(&edge.from)?,
-                    to_idx: *node_indices.get(&edge.to)?,
-                    relation: edge.relation,
+                    caller_idx: *node_indices.get(&edge.caller)?,
+                    callee_idx: *node_indices.get(&edge.callee)?,
                 })
             })
             .collect();
@@ -1117,20 +1141,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             request.offset,
             None,
         )?;
-        let diagnostics = response
-            .diagnostics
-            .into_iter()
-            .map(diagnostic)
-            .collect::<Vec<_>>();
-        let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
-        Ok(DiagnosticsResult {
-            supported: true,
-            file: file.path.clone(),
-            symbol: request.symbol.clone(),
-            diagnostics,
-            truncated: response.truncated,
-            next_offset,
-        })
+        diagnostics_result(file, request, response)
     }
 }
 

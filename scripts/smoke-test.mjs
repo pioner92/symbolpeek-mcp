@@ -90,6 +90,30 @@ function request(method, params) {
   });
 }
 
+function requireTupleFields(content, key, expected) {
+  const actual = content?.[key];
+  if (!Array.isArray(actual) || actual.length !== expected.length
+    || actual.some((field, index) => field !== expected[index])) {
+    throw new Error(`${key} did not use the expected snake_case tuple schema`);
+  }
+  return Object.fromEntries(actual.map((field, index) => [field, index]));
+}
+
+function validOutlineRows(rows, fields) {
+  return Array.isArray(rows) && rows.every((row) => Array.isArray(row)
+    && row.length === 5
+    && typeof row[fields.name] === "string"
+    && typeof row[fields.kind] === "string"
+    && Number.isInteger(row[fields.start_line])
+    && Number.isInteger(row[fields.end_line])
+    && validOutlineRows(row[fields.children], fields));
+}
+
+function outlineContains(rows, fields, name) {
+  return rows.some((row) => row[fields.name] === name
+    || outlineContains(row[fields.children], fields, name));
+}
+
 try {
   await request("initialize", {
     protocolVersion: "2025-06-18",
@@ -120,17 +144,43 @@ try {
   for (const name of requiredTools) {
     if (!toolNames.includes(name)) throw new Error(`Missing MCP tool: ${name}`);
   }
+  const toolByName = new Map(tools.result.tools.map((tool) => [tool.name, tool]));
+  for (const name of [
+    "search_symbols", "find_references", "find_callers", "find_callees", "find_implementations",
+  ]) {
+    const description = toolByName.get(name)?.description ?? "";
+    if (!description.includes("page-local path table")
+      || !description.includes("file_idx values are not stable across pages")) {
+      throw new Error(`${name} did not publish the page-local path-table contract`);
+    }
+  }
+  if (!toolByName.get("find_callees")?.description?.includes("definition: null")
+    || !toolByName.get("find_callees")?.description?.includes("definition_fields")) {
+    throw new Error("find_callees did not publish its compact unresolved-target contract");
+  }
+  if (!toolByName.get("get_call_hierarchy")?.description?.includes("node_fields and edge_fields")) {
+    throw new Error("get_call_hierarchy did not publish its tuple schema contract");
+  }
+  if (!toolByName.get("get_document_outline")?.description
+    ?.includes("recursive fixed-arity compact tuple rows")) {
+    throw new Error("get_document_outline did not publish its recursive tuple contract");
+  }
 
   const symbols = await request("tools/call", {
     name: "list_symbols",
     arguments: { path: fixture },
   });
   if (symbols.result.isError) throw new Error("list_symbols returned an MCP error");
-  const listed = symbols.result.structuredContent?.symbols ?? [];
-  if (!listed.some((symbol) => symbol.name === "sendMessage")) {
+  const symbolsContent = symbols.result.structuredContent;
+  const listed = symbolsContent?.symbols ?? [];
+  const listFields = requireTupleFields(symbolsContent, "fields", [
+    "name", "kind", "start_line", "end_line", "module_specifier",
+  ]);
+  if (!listed.some((symbol) => symbol[listFields.name] === "sendMessage")) {
     throw new Error("Smoke fixture did not return sendMessage");
   }
-  if (listed[0].file !== undefined || symbols.result.structuredContent?.truncated !== false) {
+  if (!listed.every((symbol) => Array.isArray(symbol) && symbol.length === 5)
+    || symbolsContent?.truncated !== false) {
     throw new Error("list_symbols did not return the compact bounded schema");
   }
 
@@ -150,7 +200,11 @@ try {
     name: "find_references",
     arguments: { path: fixture, symbol: "sendMessage" },
   });
-  if (references.result.isError || !(references.result.structuredContent?.references?.length > 0)) {
+  const referencesContent = references.result.structuredContent;
+  requireTupleFields(referencesContent, "fields", [
+    "file_idx", "start_line", "end_line", "start_column", "end_column", "is_definition",
+  ]);
+  if (references.result.isError || !(referencesContent?.refs?.length > 0)) {
     throw new Error("find_references did not return sendMessage references");
   }
 
@@ -158,7 +212,11 @@ try {
     name: "find_callers",
     arguments: { path: fixture, symbol: "sendMessage" },
   });
-  if (callers.result.isError || !(callers.result.structuredContent?.callers?.length > 0)) {
+  const callersContent = callers.result.structuredContent;
+  requireTupleFields(callersContent, "fields", [
+    "file_idx", "caller", "start_line", "end_line", "start_column", "end_column",
+  ]);
+  if (callers.result.isError || !(callersContent?.callers?.length > 0)) {
     throw new Error("find_callers did not return sendMessage callers");
   }
 
@@ -172,9 +230,14 @@ try {
 
   const search = await request("tools/call", {
     name: "search_symbols",
-    arguments: { path: navigationRoot, query: "useAuth" },
+    arguments: { path: navigationRoot, query: "", max_results: 1 },
   });
-  if (search.result.isError || !(search.result.structuredContent?.symbols?.length > 0)) {
+  const searchContent = search.result.structuredContent;
+  requireTupleFields(searchContent, "fields", [
+    "file_idx", "name", "kind", "start_line", "end_line", "start_column", "end_column",
+  ]);
+  if (search.result.isError || searchContent?.symbols?.length !== 1
+    || searchContent.truncated !== true || searchContent.next_offset !== 1) {
     throw new Error("search_symbols did not return workspace matches");
   }
 
@@ -190,8 +253,12 @@ try {
     name: "find_implementations",
     arguments: { path: contractsFixture, symbol: "Repository" },
   });
+  const implementationsContent = implementations.result.structuredContent;
+  requireTupleFields(implementationsContent, "fields", [
+    "file_idx", "symbol", "start_line", "end_line", "start_column", "end_column",
+  ]);
   if (implementations.result.isError
-    || !(implementations.result.structuredContent?.implementations?.length >= 2)) {
+    || !(implementationsContent?.impls?.length >= 2)) {
     throw new Error("find_implementations did not return contract implementations");
   }
 
@@ -200,10 +267,16 @@ try {
     arguments: { path: fixture },
   });
   const outlineContent = outline.result.structuredContent;
-  if (outline.result.isError || !(outlineContent?.symbols?.length > 0)) {
+  const outlineFields = requireTupleFields(outlineContent, "fields", [
+    "name", "kind", "start_line", "end_line", "children",
+  ]);
+  if (outline.result.isError || !(outlineContent?.symbols?.length > 0)
+    || !validOutlineRows(outlineContent.symbols, outlineFields)
+    || !outlineContains(outlineContent.symbols, outlineFields, "sendMessage")
+    || !outlineContains(outlineContent.symbols, outlineFields, "normalize")) {
     throw new Error("get_document_outline did not return symbols");
   }
-  if (outlineContent.symbols[0].file !== undefined || outlineContent.truncated !== false) {
+  if (outlineContent.supported !== undefined || outlineContent.truncated !== false) {
     throw new Error("get_document_outline did not return the compact bounded schema");
   }
 
@@ -211,7 +284,23 @@ try {
     name: "find_callees",
     arguments: { path: fixture, symbol: "sendMessage" },
   });
-  if (callees.result.isError || !(callees.result.structuredContent?.callees?.length > 0)) {
+  const calleesContent = callees.result.structuredContent;
+  const calleeFields = requireTupleFields(calleesContent, "fields", [
+    "callee", "file_idx", "start_line", "end_line", "start_column", "end_column", "definition",
+  ]);
+  requireTupleFields(calleesContent, "definition_fields", [
+    "file_idx", "start_line", "end_line", "start_column", "end_column",
+  ]);
+  if (callees.result.isError || !(calleesContent?.callees?.length > 0)
+    || !calleesContent.callees.some((callee) => callee[calleeFields.callee] === "validateInput")
+    || !calleesContent.callees.every((callee) => Array.isArray(callee)
+      && callee.length === 7
+      && Number.isInteger(callee[calleeFields.file_idx])
+      && callee[calleeFields.file_idx] >= 0
+      && callee[calleeFields.file_idx] < calleesContent.files.length
+      && (callee[calleeFields.definition] === null
+        || (Array.isArray(callee[calleeFields.definition])
+          && callee[calleeFields.definition].length === 5)))) {
     throw new Error("find_callees did not return project callees");
   }
 
@@ -231,7 +320,19 @@ try {
     name: "get_call_hierarchy",
     arguments: { path: fixture, symbol: "sendMessage", depth: 2 },
   });
-  if (hierarchy.result.isError || !(hierarchy.result.structuredContent?.nodes?.length > 0)) {
+  const hierarchyContent = hierarchy.result.structuredContent;
+  const nodeFields = requireTupleFields(hierarchyContent, "node_fields", [
+    "symbol", "file_idx", "start_line", "end_line", "hub", "callers_elided",
+  ]);
+  requireTupleFields(hierarchyContent, "edge_fields", ["caller_idx", "callee_idx"]);
+  if (hierarchy.result.isError || !(hierarchyContent?.nodes?.length > 0)
+    || !hierarchyContent.nodes.some((node) => node[nodeFields.symbol] === "sendMessage")
+    || !hierarchyContent.nodes.every((node) => Number.isInteger(node[nodeFields.file_idx])
+      && node[nodeFields.file_idx] >= 0
+      && node[nodeFields.file_idx] < hierarchyContent.files.length)
+    || !hierarchyContent.edges.every((edge) => Array.isArray(edge) && edge.length === 2)
+    || new Set(hierarchyContent.edges.map(([callerIdx, calleeIdx]) => `${callerIdx}:${calleeIdx}`)).size
+      !== hierarchyContent.edges.length) {
     throw new Error("get_call_hierarchy did not return call graph nodes");
   }
 

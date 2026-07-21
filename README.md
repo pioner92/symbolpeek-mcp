@@ -114,7 +114,7 @@ re-exports.*
 | --- | --- |
 | `find_references` | “Where is this symbol referenced across the project?” |
 | `find_callers` | “Which functions or methods call this symbol?” |
-| `find_callees` | “Which project symbols does this symbol call?” |
+| `find_callees` | “Which named targets does this symbol call, including unresolved ones?” |
 | `find_dependencies` | “Which local symbols does this symbol depend on?” |
 | `get_call_hierarchy` | “What callers and callees surround this symbol?” |
 
@@ -127,14 +127,16 @@ re-exports.*
 | `get_document_outline` | “What is the nested declaration structure of this file?” |
 | `get_diagnostics` | “What TypeScript compiler diagnostics affect this file or symbol?” |
 
-Flat bounded tools (`list_symbols`, references, callers, callees,
-implementations, and diagnostics) support `offset` pagination. A truncated
+Flat bounded tools (`list_symbols`, `search_symbols`, references, callers,
+callees, implementations, and diagnostics) support `offset` pagination. A truncated
 page includes `next_offset`; pass it to the next request. Cross-file pages use
-page-local `files[]` tables; for compact tuple responses, the `file` position
+page-local `files[]` tables; for compact tuple responses, the `file_idx` position
 declared by `fields` indexes that table. When a compact response includes
-`base`, join it with `files[file]` to recover the absolute path; otherwise the
-table contains absolute paths. Workspace `search_symbols`, nested outlines,
-and call graphs remain deliberately bounded without offset pagination.
+`base`, join it with `files[file_idx]` to recover the absolute path; otherwise the
+table contains absolute paths. Nested outlines and call graphs remain deliberately
+bounded without offset pagination. Outline nodes use recursive tuple rows declared
+by `fields`; call hierarchy nodes and edges use tuple rows declared by
+`node_fields` and `edge_fields`.
 
 ### Statistics
 

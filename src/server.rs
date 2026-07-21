@@ -235,7 +235,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "List bounded top-level symbols in one TypeScript or JavaScript file. Returns compact tuple rows; the fields array defines each position."
+        description = "List bounded top-level symbols in one TypeScript or JavaScript file. Returns compact tuple rows; the fields array defines each position. Supports offset pagination via next_offset; every page refers to the same top-level file."
     )]
     async fn list_symbols(
         &self,
@@ -275,7 +275,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find all project references to a TypeScript or JavaScript symbol, including its definition. Returns compact refs tuple rows; the fields array defines each position."
+        description = "Find all project references to a TypeScript or JavaScript symbol, including its definition. Returns compact refs tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
     )]
     async fn find_references(
         &self,
@@ -296,7 +296,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find project call sites and enclosing callers for a TypeScript or JavaScript symbol. Returns compact callers tuple rows; the fields array defines each position."
+        description = "Find project call sites and enclosing callers for a TypeScript or JavaScript symbol. Returns compact callers tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
     )]
     async fn find_callers(
         &self,
@@ -357,7 +357,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Search symbols across a TypeScript or JavaScript workspace without reading every file. Returns compact symbols tuple rows; the fields array defines each position."
+        description = "Search symbols across a TypeScript or JavaScript workspace without reading every file. Returns stable, offset-paginated compact symbols tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
     )]
     async fn search_symbols(
         &self,
@@ -386,7 +386,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find TypeScript or JavaScript implementations of an interface, class, or abstract contract. Returns compact impls tuple rows; the fields array defines each position."
+        description = "Find TypeScript or JavaScript implementations of an interface, class, or abstract contract. Returns compact impls tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
     )]
     async fn find_implementations(
         &self,
@@ -427,7 +427,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Return a nested AST-backed outline of declarations, classes, methods, and functions in a file."
+        description = "Return a nested AST-backed outline of declarations, classes, methods, and functions in one file. Returns recursive fixed-arity compact tuple rows; fields defines every position at every nesting level, including children."
     )]
     async fn get_document_outline(
         &self,
@@ -443,11 +443,12 @@ impl SymbolPeekServer {
             .get_document_outline(&file, request.max_results)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_document_outline(&result);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
-        description = "Find direct project callees referenced by a TypeScript or JavaScript symbol."
+        description = "Find direct statically named calls made by a TypeScript or JavaScript symbol. Returns compact callees tuple rows described by fields and nested resolved-definition tuples described by definition_fields. Statically named calls with no known definition are retained with definition: null; known standard-library/external calls and dynamic anonymous targets are excluded. Pagination uses one page-local path table for call sites and nested definitions: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
     )]
     async fn find_callees(
         &self,
@@ -463,7 +464,8 @@ impl SymbolPeekServer {
             .find_callees(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_callees(&result);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(description = "Return TypeScript compiler diagnostics for a file or for one symbol.")]
@@ -493,7 +495,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Build a bounded TypeScript or JavaScript call hierarchy around a symbol."
+        description = "Build a bounded TypeScript or JavaScript call hierarchy around a symbol. Returns compact node and edge tuple rows; node_fields and edge_fields define their positions, and every edge is [caller_idx, callee_idx]."
     )]
     async fn get_call_hierarchy(
         &self,
@@ -509,7 +511,8 @@ impl SymbolPeekServer {
             .get_call_hierarchy(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
-        Ok(mcp::json_result(&result))
+        let compact = mcp::compact_call_hierarchy(&result);
+        Ok(mcp::json_result(&compact))
     }
 
     #[tool(
@@ -737,7 +740,7 @@ mod tests {
                 "/project/src/caller.ts",
                 "/project/src/caller.ts"
             ],
-            "references": [{ "fileIdx": 1 }]
+            "references": [{ "file_idx": 1 }]
         });
         let mut files = BTreeSet::new();
 

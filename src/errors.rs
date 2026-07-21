@@ -26,6 +26,13 @@ pub enum SymbolPeekError {
     #[error("symbol '{symbol}' was not found in {path}")]
     SymbolNotFound { path: PathBuf, symbol: String },
 
+    #[error("member '{member}' was not found in '{parent}' in {path} (parent exists)")]
+    SymbolMemberNotFound {
+        path: PathBuf,
+        parent: String,
+        member: String,
+    },
+
     #[error("symbol '{symbol}' is nested in {path}; use a qualified name: {candidates}")]
     AmbiguousSymbol {
         path: PathBuf,

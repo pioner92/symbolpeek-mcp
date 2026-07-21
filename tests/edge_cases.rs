@@ -3,7 +3,7 @@ use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
-    types::SymbolKind,
+    types::{DiagnosticsRequest, SymbolKind},
 };
 
 fn source_file(path: &str, extension: &str, source: &str) -> SourceFile {
@@ -24,6 +24,24 @@ fn empty_and_comment_only_files_have_no_symbols() {
         let file = source_file(path, extension, source);
         let parsed = adapter.parse(&file).expect("empty files should parse");
         assert!(parsed.list_symbols(&file, None, None).symbols.is_empty());
+        let outline = parsed
+            .get_document_outline(&file, None)
+            .expect("empty outline should resolve");
+        assert!(outline.symbols.is_empty());
+        assert!(!outline.truncated);
+        let diagnostics = parsed
+            .get_diagnostics(
+                &file,
+                &DiagnosticsRequest {
+                    path: file.path.display().to_string(),
+                    symbol: None,
+                    max_results: None,
+                    offset: None,
+                },
+            )
+            .expect("empty diagnostics should resolve");
+        assert!(diagnostics.diagnostics.is_empty());
+        assert!(!diagnostics.truncated);
     }
 }
 
@@ -101,6 +119,16 @@ fn handles_a_large_single_file_without_project_scanning() {
     assert_eq!(second_page.symbols[999].name, "value1999");
     assert!(!second_page.truncated);
     assert_eq!(second_page.next_offset, None);
+    let default_outline = parsed
+        .get_document_outline(&file, None)
+        .expect("large outline should resolve");
+    assert_eq!(default_outline.symbols.len(), 200);
+    assert!(default_outline.truncated);
+    let maximum_outline = parsed
+        .get_document_outline(&file, Some(10_000))
+        .expect("maximum outline should resolve");
+    assert_eq!(maximum_outline.symbols.len(), 1_000);
+    assert!(maximum_outline.truncated);
     let last = parsed
         .read_symbol(&file, "value1999")
         .expect("last symbol should be readable");

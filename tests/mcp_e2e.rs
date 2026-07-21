@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     path::{Component, Path},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -116,19 +116,15 @@ fn call(name: &str, id: u64, arguments: &Value) -> Value {
     })
 }
 
-fn assert_indexed_items(result: &Value, key: &str) {
-    assert!(result["files"].is_array());
-    assert!(result["truncated"].is_boolean());
-    assert!(result[key].as_array().is_some_and(|items| {
-        items.iter().all(|item| {
-            item["fileIdx"].as_u64().is_some_and(|index| {
-                index
-                    < result["files"]
-                        .as_array()
-                        .map_or(0, |files| files.len() as u64)
-            }) && item.get("file").is_none()
-        })
-    }));
+fn assert_tool_argument_error(response: &Value, expected: &str) {
+    assert_eq!(response["result"]["isError"], true);
+    assert!(response["result"]["content"]
+        .as_array()
+        .and_then(|content| content.first())
+        .and_then(|content| content["text"].as_str())
+        .is_some_and(|message| {
+            message.contains("failed to deserialize parameters") && message.contains(expected)
+        }));
 }
 
 fn assert_compact_indexed_rows(result: &Value, key: &str, expected_fields: &[&str]) {
@@ -166,17 +162,76 @@ fn assert_compact_indexed_rows(result: &Value, key: &str, expected_fields: &[&st
     }));
 }
 
+fn assert_outline_rows(rows: &Value) {
+    let rows = rows
+        .as_array()
+        .expect("compact outline symbols should be tuple rows");
+    for row in rows {
+        let row = row
+            .as_array()
+            .expect("each compact outline symbol should be a tuple row");
+        assert_eq!(row.len(), 5);
+        assert!(row[0].is_string());
+        assert!(row[1].is_string());
+        assert!(row[2].is_u64());
+        assert!(row[3].is_u64());
+        assert_outline_rows(&row[4]);
+    }
+}
+
+fn outline_contains(rows: &Value, name: &str) -> bool {
+    rows.as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row.as_array().is_some_and(|row| {
+                row.first().and_then(Value::as_str) == Some(name)
+                    || row
+                        .get(4)
+                        .is_some_and(|children| outline_contains(children, name))
+            })
+        })
+    })
+}
+
 fn assert_indexed_callees(result: &Value) {
-    assert_indexed_items(result, "callees");
+    let files = result["files"]
+        .as_array()
+        .expect("compact callees should include a files table");
+    assert_eq!(
+        result["fields"],
+        json!([
+            "callee",
+            "file_idx",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
+            "definition"
+        ])
+    );
+    assert_eq!(
+        result["definition_fields"],
+        json!([
+            "file_idx",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column"
+        ])
+    );
     assert!(result["callees"].as_array().is_some_and(|items| {
         items.iter().all(|item| {
-            item.get("definition").is_none_or(|definition| {
-                definition["fileIdx"].as_u64().is_some_and(|index| {
-                    index
-                        < result["files"]
-                            .as_array()
-                            .map_or(0, |files| files.len() as u64)
-                }) && definition.get("file").is_none()
+            item.as_array().is_some_and(|row| {
+                row.len() == 7
+                    && row[1]
+                        .as_u64()
+                        .is_some_and(|index| index < files.len() as u64)
+                    && (row[6].is_null()
+                        || row[6].as_array().is_some_and(|definition| {
+                            definition.len() == 5
+                                && definition[0]
+                                    .as_u64()
+                                    .is_some_and(|index| index < files.len() as u64)
+                        }))
             })
         })
     }));
@@ -200,6 +255,13 @@ fn navigation_workspace_path() -> String {
 fn contracts_fixture_path() -> String {
     format!(
         "{}/tests/fixtures/navigation/contracts.ts",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+fn callee_edge_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/callee_edge_cases.ts",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -257,6 +319,65 @@ fn starts_initializes_registers_tools_and_shuts_down() {
     assert!(names.contains(&"get_call_hierarchy"));
     assert!(names.contains(&"get_statistics"));
 
+    for name in [
+        "search_symbols",
+        "find_references",
+        "find_callers",
+        "find_callees",
+        "find_implementations",
+    ] {
+        let description = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["description"].as_str())
+            .expect("paginated cross-file tool should publish its description");
+        assert!(description.contains("page-local path table"));
+        assert!(description.contains("file_idx values are not stable across pages"));
+    }
+    let list_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_symbols")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("list_symbols should publish its description");
+    assert!(list_description.contains("every page refers to the same top-level file"));
+
+    let callee_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "find_callees")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("find_callees should publish its description");
+    assert!(callee_description.contains("callees tuple rows described by fields"));
+    assert!(callee_description.contains("definition_fields"));
+    assert!(callee_description.contains("definition: null"));
+    assert!(callee_description.contains("dynamic anonymous targets are excluded"));
+
+    let hierarchy_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "get_call_hierarchy")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("get_call_hierarchy should publish its description");
+    assert!(hierarchy_description.contains("node_fields and edge_fields"));
+    assert!(hierarchy_description.contains("[caller_idx, callee_idx]"));
+
+    let outline_description = tools
+        .iter()
+        .find(|tool| tool["name"] == "get_document_outline")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("get_document_outline should publish its description");
+    assert!(outline_description.contains("recursive fixed-arity compact tuple rows"));
+    assert!(outline_description.contains("every nesting level, including children"));
+
+    client.send(&call("get_statistics", 3, &json!({})));
+    let empty_statistics = client.receive();
+    assert_eq!(
+        empty_statistics["result"]["structuredContent"]["session"]["successful_requests"],
+        0
+    );
+    assert_eq!(
+        empty_statistics["result"]["structuredContent"]["session"]["files_avoided"],
+        0
+    );
+
     client.shutdown();
 }
 
@@ -280,12 +401,12 @@ fn handles_cross_file_navigation_requests() {
         references_structured,
         "refs",
         &[
-            "file",
-            "startLine",
-            "endLine",
-            "startCol",
-            "endCol",
-            "isDef",
+            "file_idx",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
+            "is_definition",
         ],
     );
 
@@ -337,12 +458,12 @@ fn handles_cross_file_navigation_requests() {
         callers_structured,
         "callers",
         &[
-            "file",
+            "file_idx",
             "caller",
-            "startLine",
-            "endLine",
-            "startCol",
-            "endCol",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
         ],
     );
 
@@ -392,17 +513,39 @@ fn handles_qualified_enum_members() {
         references_structured,
         "refs",
         &[
-            "file",
-            "startLine",
-            "endLine",
-            "startCol",
-            "endCol",
-            "isDef",
+            "file_idx",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
+            "is_definition",
         ],
     );
     assert!(references_structured["refs"]
         .as_array()
         .is_some_and(|items| items.len() >= 3));
+
+    client.send(&call(
+        "read_symbol",
+        92,
+        &json!({"path": screens_fixture_path(), "symbol": "Screens.DOES_NOT_EXIST"}),
+    ));
+    let missing_member = client.receive();
+    assert_eq!(missing_member["error"]["code"], -32602);
+    assert!(missing_member["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("parent exists")));
+
+    client.send(&call(
+        "read_symbol",
+        93,
+        &json!({"path": screens_fixture_path(), "symbol": "Missing.DOES_NOT_EXIST"}),
+    ));
+    let missing_parent = client.receive();
+    assert_eq!(missing_parent["error"]["code"], -32602);
+    assert!(missing_parent["error"]["message"]
+        .as_str()
+        .is_some_and(|message| !message.contains("parent exists")));
 
     client.shutdown();
 }
@@ -416,26 +559,57 @@ fn handles_ast_intelligence_requests() {
     client.send(&call(
         "search_symbols",
         60,
-        &json!({"path": navigation_workspace_path(), "query": "useAuth"}),
+        &json!({"path": navigation_workspace_path(), "query": "", "max_results": 1}),
     ));
     let search = client.receive();
     let search_structured = &search["result"]["structuredContent"];
-    assert!(search_structured["symbols"]
-        .as_array()
-        .is_some_and(|items| items.iter().any(|item| item[1] == "useAuth")));
+    assert_eq!(
+        search_structured["symbols"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(search_structured["truncated"], true);
+    assert_eq!(search_structured["next_offset"], 1);
     assert_compact_indexed_rows(
         search_structured,
         "symbols",
         &[
-            "file",
+            "file_idx",
             "name",
             "kind",
-            "startLine",
-            "endLine",
-            "startCol",
-            "endCol",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
         ],
     );
+    let first_symbol = search_structured["symbols"][0][1].clone();
+
+    client.send(&call(
+        "search_symbols",
+        600,
+        &json!({"path": navigation_workspace_path(), "query": "", "max_results": 1, "offset": 1}),
+    ));
+    let next_search = client.receive();
+    let next_search_structured = &next_search["result"]["structuredContent"];
+    assert_compact_indexed_rows(
+        next_search_structured,
+        "symbols",
+        &[
+            "file_idx",
+            "name",
+            "kind",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
+        ],
+    );
+    assert_eq!(
+        next_search_structured["symbols"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_ne!(next_search_structured["symbols"][0][1], first_symbol);
+    assert_eq!(next_search_structured["next_offset"], 2);
 
     client.send(&call(
         "get_type",
@@ -467,13 +641,12 @@ fn handles_ast_intelligence_requests() {
         implementations_structured,
         "impls",
         &[
-            "file",
+            "file_idx",
             "symbol",
-            "startLine",
-            "endLine",
-            "startCol",
-            "endCol",
-            "isDef",
+            "start_line",
+            "end_line",
+            "start_column",
+            "end_column",
         ],
     );
 
@@ -484,14 +657,21 @@ fn handles_ast_intelligence_requests() {
     ));
     let outline = client.receive();
     let outline_structured = &outline["result"]["structuredContent"];
-    assert!(outline_structured["symbols"]
-        .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["name"] == "sendMessage")));
+    assert_eq!(
+        outline_structured["fields"],
+        json!(["name", "kind", "start_line", "end_line", "children"])
+    );
+    assert_outline_rows(&outline_structured["symbols"]);
+    assert!(outline_contains(
+        &outline_structured["symbols"],
+        "sendMessage"
+    ));
+    assert!(outline_contains(
+        &outline_structured["symbols"],
+        "normalize"
+    ));
     assert_eq!(outline_structured["truncated"], false);
-    assert!(outline_structured["symbols"]
-        .as_array()
-        .and_then(|items| items.first())
-        .is_some_and(|item| item.get("file").is_none()));
+    assert!(outline_structured.get("supported").is_none());
 
     client.send(&call(
         "find_callees",
@@ -502,7 +682,7 @@ fn handles_ast_intelligence_requests() {
     let callees_structured = &callees["result"]["structuredContent"];
     assert!(callees_structured["callees"]
         .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["callee"] == "validateInput")));
+        .is_some_and(|items| items.iter().any(|item| item[0] == "validateInput")));
     assert_indexed_callees(callees_structured);
 
     client.send(&call(
@@ -528,36 +708,67 @@ fn handles_ast_intelligence_requests() {
     ));
     let hierarchy = client.receive();
     let structured = &hierarchy["result"]["structuredContent"];
+    assert_eq!(
+        structured["node_fields"],
+        json!([
+            "symbol",
+            "file_idx",
+            "start_line",
+            "end_line",
+            "hub",
+            "callers_elided"
+        ])
+    );
+    assert_eq!(
+        structured["edge_fields"],
+        json!(["caller_idx", "callee_idx"])
+    );
     assert!(structured["nodes"]
         .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["symbol"] == "sendMessage")));
+        .is_some_and(|items| items.iter().any(|item| item[0] == "sendMessage")));
     assert!(structured["files"].is_array());
     assert!(structured["nodes"].as_array().is_some_and(|nodes| {
         nodes.iter().all(|node| {
-            node["fileIdx"].as_u64().is_some_and(|file_idx| {
-                file_idx
-                    < structured["files"]
-                        .as_array()
-                        .map_or(0, |files| files.len() as u64)
-            }) && node.get("id").is_none()
-                && node.get("file").is_none()
+            node.as_array().is_some_and(|node| {
+                node.len() == 6
+                    && node[1].as_u64().is_some_and(|file_idx| {
+                        file_idx
+                            < structured["files"]
+                                .as_array()
+                                .map_or(0, |files| files.len() as u64)
+                    })
+            })
         })
     }));
     assert!(structured["edges"].as_array().is_some_and(|edges| {
         edges.iter().all(|edge| {
-            edge["fromIdx"].as_u64().is_some_and(|from_idx| {
-                from_idx
-                    < structured["nodes"]
-                        .as_array()
-                        .map_or(0, |nodes| nodes.len() as u64)
-            }) && edge["toIdx"].as_u64().is_some_and(|to_idx| {
-                to_idx
-                    < structured["nodes"]
-                        .as_array()
-                        .map_or(0, |nodes| nodes.len() as u64)
+            edge.as_array().is_some_and(|edge| {
+                edge.len() == 2
+                    && edge[0].as_u64().is_some_and(|caller_idx| {
+                        caller_idx
+                            < structured["nodes"]
+                                .as_array()
+                                .map_or(0, |nodes| nodes.len() as u64)
+                    })
+                    && edge[1].as_u64().is_some_and(|callee_idx| {
+                        callee_idx
+                            < structured["nodes"]
+                                .as_array()
+                                .map_or(0, |nodes| nodes.len() as u64)
+                    })
             })
         })
     }));
+    let unique_edges = structured["edges"]
+        .as_array()
+        .expect("hierarchy edges should be an array")
+        .iter()
+        .map(|edge| (edge[0].as_u64(), edge[1].as_u64()))
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        unique_edges.len(),
+        structured["edges"].as_array().map_or(0, Vec::len)
+    );
 
     client.send(&call(
         "get_call_hierarchy",
@@ -568,10 +779,61 @@ fn handles_ast_intelligence_requests() {
     let directed_content = &directed["result"]["structuredContent"];
     assert!(directed_content["nodes"]
         .as_array()
-        .is_some_and(|items| items.iter().any(|item| item["symbol"] == "sendMessage")));
+        .is_some_and(|items| items.iter().any(|item| item[0] == "sendMessage")));
+    let directed_nodes = directed_content["nodes"]
+        .as_array()
+        .expect("directed hierarchy nodes should be an array");
+    let root_index = directed_nodes
+        .iter()
+        .position(|node| node[0] == "sendMessage")
+        .expect("directed hierarchy should contain its root");
+    let target_index = directed_nodes
+        .iter()
+        .position(|node| node[0] == "validateInput")
+        .expect("directed hierarchy should contain the expected callee");
     assert!(directed_content["edges"]
         .as_array()
-        .is_some_and(|edges| edges.iter().all(|edge| edge["relation"] == "callee")));
+        .is_some_and(|edges| edges.contains(&json!([root_index, target_index]))));
+
+    client.send(&call(
+        "find_callees",
+        68,
+        &json!({"path": callee_edge_fixture_path(), "symbol": "inspectCalls"}),
+    ));
+    let edge_callees = client.receive();
+    let edge_content = &edge_callees["result"]["structuredContent"];
+    assert_indexed_callees(edge_content);
+    let rows = edge_content["callees"]
+        .as_array()
+        .expect("edge-case callees should be tuple rows");
+    assert!(rows
+        .iter()
+        .any(|row| row[0] == "canonicalTarget" && row[6].is_array()));
+    assert!(rows
+        .iter()
+        .any(|row| row[0] == "MissingConstructor" && row[6].is_null()));
+    assert!(edge_content["base"]
+        .as_str()
+        .is_some_and(|base| Path::new(base).is_absolute()));
+    assert!(edge_content["files"].as_array().is_some_and(|files| {
+        files.iter().all(|file| {
+            file.as_str()
+                .is_some_and(|file| !Path::new(file).is_absolute())
+        })
+    }));
+
+    client.send(&call(
+        "find_callees",
+        69,
+        &json!({"path": contracts_fixture_path(), "symbol": "MemoryRepository.load"}),
+    ));
+    let empty_callees = client.receive();
+    let empty_content = &empty_callees["result"]["structuredContent"];
+    assert_indexed_callees(empty_content);
+    assert_eq!(empty_content["callees"], json!([]));
+    assert_eq!(empty_content["files"], json!([]));
+    assert!(empty_content.get("base").is_none());
+    assert_eq!(empty_content["truncated"], false);
 
     client.shutdown();
 }
@@ -593,7 +855,7 @@ fn resolves_relative_paths_against_configured_workspace_root() {
         .is_some_and(|symbols| { symbols.iter().any(|symbol| symbol[0] == "sendMessage") }));
     assert_eq!(
         structured["fields"],
-        json!(["name", "kind", "startLine", "endLine", "module"])
+        json!(["name", "kind", "start_line", "end_line", "module_specifier"])
     );
     assert_eq!(structured["truncated"], false);
     assert!(structured["symbols"]
@@ -641,6 +903,62 @@ fn handles_valid_invalid_and_unsupported_requests() {
         unsupported["result"]["structuredContent"],
         json!({"supported": false})
     );
+
+    client.send(&call(
+        "list_symbols",
+        13,
+        &json!({"path": fixture_path(), "max_results": 0}),
+    ));
+    let clamped = client.receive();
+    assert_eq!(
+        clamped["result"]["structuredContent"]["symbols"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(clamped["result"]["structuredContent"]["truncated"], true);
+
+    client.send(&call(
+        "find_references",
+        14,
+        &json!({"path": fixture_path(), "symbol": "sendMessage", "offset": -1}),
+    ));
+    let negative_offset = client.receive();
+    assert_tool_argument_error(&negative_offset, "expected usize");
+
+    client.send(&call(
+        "get_call_hierarchy",
+        15,
+        &json!({"path": fixture_path(), "symbol": "sendMessage", "direction": "sideways"}),
+    ));
+    let invalid_direction = client.receive();
+    assert_tool_argument_error(&invalid_direction, "unknown variant");
+
+    client.send(&call("read_symbol", 16, &json!({"path": fixture_path()})));
+    let missing_argument = client.receive();
+    assert_tool_argument_error(&missing_argument, "missing field");
+
+    client.send(&call(
+        "read_symbol",
+        17,
+        &json!({"path": "tests/fixtures/missing.ts", "symbol": "anything"}),
+    ));
+    let missing_file = client.receive();
+    assert_eq!(missing_file["error"]["code"], -32602);
+    assert!(missing_file["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("file not found")));
+
+    client.send(&call(
+        "get_diagnostics",
+        18,
+        &json!({"path": diagnostics_fixture_path(), "symbol": "definitelyMissing"}),
+    ));
+    let missing_scope = client.receive();
+    assert_eq!(missing_scope["error"]["code"], -32602);
+    assert!(missing_scope["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("symbol 'definitelyMissing' was not found")));
 
     client.shutdown();
 }

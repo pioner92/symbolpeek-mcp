@@ -80,7 +80,6 @@ pub struct SymbolLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct IndexedSymbolLocation {
-    #[serde(rename = "fileIdx")]
     pub file_idx: usize,
     pub symbol: String,
     pub lines: LineRange,
@@ -91,7 +90,6 @@ pub struct IndexedSymbolLocation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallerLocation {
-    #[serde(rename = "fileIdx")]
     pub file_idx: usize,
     pub caller: String,
     pub lines: LineRange,
@@ -136,7 +134,6 @@ pub struct DefinitionResult {
 pub struct SearchSymbol {
     pub name: String,
     pub kind: SymbolKind,
-    #[serde(rename = "fileIdx")]
     pub file_idx: usize,
     pub lines: LineRange,
     pub start_column: usize,
@@ -151,6 +148,8 @@ pub struct SearchSymbolsResult {
     pub files: Vec<PathBuf>,
     pub symbols: Vec<SearchSymbol>,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -180,7 +179,6 @@ pub struct TypeInfoResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CalleeLocation {
     pub callee: String,
-    #[serde(rename = "fileIdx")]
     pub file_idx: usize,
     pub lines: LineRange,
     pub start_column: usize,
@@ -203,7 +201,6 @@ pub struct CalleesResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallHierarchyNode {
     pub symbol: String,
-    #[serde(rename = "fileIdx")]
     pub file_idx: usize,
     pub lines: LineRange,
     /// True when this symbol has many callers (a hub) and its caller subtree was
@@ -215,11 +212,10 @@ pub struct CallHierarchyNode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallHierarchyEdge {
-    #[serde(rename = "fromIdx")]
-    pub from_idx: usize,
-    #[serde(rename = "toIdx")]
-    pub to_idx: usize,
-    pub relation: String,
+    /// Index of the calling symbol in `CallHierarchyResult::nodes`.
+    pub caller_idx: usize,
+    /// Index of the called symbol in `CallHierarchyResult::nodes`.
+    pub callee_idx: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -333,8 +329,10 @@ pub struct SearchSymbolsRequest {
     pub query: String,
     #[schemars(description = "Optional symbol kind filter")]
     pub kind: Option<SymbolKind>,
-    #[schemars(description = "Maximum number of matches; defaults to 200")]
+    #[schemars(description = "Page size; defaults to 200 and is capped at 1000")]
     pub max_results: Option<usize>,
+    #[schemars(description = "Zero-based result offset; defaults to 0")]
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]

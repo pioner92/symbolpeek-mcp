@@ -216,6 +216,32 @@ fn read_symbol_still_reports_truly_absent_names() {
 }
 
 #[test]
+fn distinguishes_a_missing_member_from_a_missing_parent() {
+    let file = screens_file();
+    let parsed = TypeScriptAdapter.parse(&file).expect("parse enum fixture");
+
+    let missing_member = parsed
+        .read_symbol(&file, "Screens.DOES_NOT_EXIST")
+        .expect_err("missing enum member should not resolve");
+    assert!(matches!(
+        missing_member,
+        SymbolPeekError::SymbolMemberNotFound {
+            ref parent,
+            ref member,
+            ..
+        } if parent == "Screens" && member == "DOES_NOT_EXIST"
+    ));
+
+    let missing_parent = parsed
+        .read_symbol(&file, "Missing.DOES_NOT_EXIST")
+        .expect_err("missing parent should not resolve");
+    assert!(matches!(
+        missing_parent,
+        SymbolPeekError::SymbolNotFound { .. }
+    ));
+}
+
+#[test]
 fn read_symbol_reports_qualified_candidates_for_ambiguous_bare_names() {
     let source = "function outer() {\n  const value = 1;\n  return value;\n}\n\
 function other() {\n  const value = 2;\n  return value;\n}\n";

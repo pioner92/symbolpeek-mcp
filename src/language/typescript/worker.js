@@ -802,14 +802,29 @@ function searchOutput(service) {
   const query = String(request.query || "").toLowerCase();
   const kind = request.kind;
   const maxResults = Math.min(Math.max(Number(request.max_results || 200), 1), 1000);
+  const offset = navigationOffset();
   const matches = [];
-  for (const file of service.getProgram()?.getSourceFiles() || []) {
-    if (!isSupportedSource(file.fileName)) continue;
-    const normalized = path.resolve(file.fileName);
-    if (normalized !== workspaceRoot && !normalized.startsWith(`${workspaceRoot}${path.sep}`)) continue;
-    for (const definition of searchDefinitionsInFile(file)) {
+  let skipped = 0;
+  const files = (service.getProgram()?.getSourceFiles() || [])
+    .filter((file) => isSupportedSource(file.fileName))
+    .map((file) => ({ file, normalized: path.resolve(file.fileName) }))
+    .filter(({ normalized }) => (
+      normalized === workspaceRoot || normalized.startsWith(`${workspaceRoot}${path.sep}`)
+    ))
+    .sort((left, right) => compareText(left.normalized, right.normalized));
+  for (const { file, normalized } of files) {
+    const definitions = searchDefinitionsInFile(file).sort((left, right) => (
+      compareNumber(left.nameStart, right.nameStart)
+        || compareText(left.name, right.name)
+        || compareText(left.kind, right.kind)
+    ));
+    for (const definition of definitions) {
       if (query && !definition.name.toLowerCase().includes(query)) continue;
       if (kind && definition.kind !== kind) continue;
+      if (skipped < offset) {
+        skipped += 1;
+        continue;
+      }
       const start = file.getLineAndCharacterOfPosition(definition.nameStart);
       const nameEnd = definition.nameStart + definition.name.split(".").pop().length;
       const end = file.getLineAndCharacterOfPosition(nameEnd);
@@ -916,36 +931,101 @@ function declarationContainerAt(file, position) {
   return undefined;
 }
 
+function containerNameNode(container) {
+  if (container.name) return container.name;
+  if (container.parent && ts.isVariableDeclaration(container.parent)) {
+    return container.parent.name;
+  }
+  return undefined;
+}
+
 function containerLocation(container) {
   const source = container.getSourceFile();
-  let nameNode = container.name;
-  if (!nameNode && container.parent && ts.isVariableDeclaration(container.parent)) nameNode = container.parent.name;
+  const nameNode = containerNameNode(container);
   const symbol = nameOf(nameNode) || "<module>";
   const start = nameNode ? nameNode.getStart(source) : container.getStart(source);
   const end = nameNode ? nameNode.getEnd() : container.getStart(source);
   return locationForSpan(source.fileName, { start, length: end - start }, symbol, true);
 }
 
+function definitionAnchorForContainer(container) {
+  const source = container.getSourceFile();
+  const nameNode = containerNameNode(container);
+  const name = nameOf(nameNode);
+  if (!nameNode || !name) return undefined;
+  const start = nameNode.getStart(source);
+  return {
+    fileName: source.fileName,
+    textSpan: { start, length: nameNode.getEnd() - start },
+    name,
+  };
+}
+
+function callableDefinitionAnchorForLocation(service, location) {
+  const file = sourceFileFromProgram(service, location.file);
+  const position = file
+    ? positionForLineColumn(file, location.start_line, location.start_column)
+    : undefined;
+  const container = position === undefined ? undefined : declarationContainerAt(file, position);
+  const anchor = container ? definitionAnchorForContainer(container) : undefined;
+  // A parameter or destructured local binding can resolve inside an enclosing
+  // function, but it does not own that function's body. Expand only when the
+  // discovered symbol is the declaration name of the callable container itself.
+  return anchor && anchor.textSpan.start === position ? anchor : undefined;
+}
+
 function nodeId(location) {
   return `${path.resolve(location.file)}:${location.start_line}:${location.start_column}`;
 }
 
-function definitionLocationForSymbol(checker, symbol) {
+function resolveAliasedSymbol(checker, symbol) {
   if (!symbol) return undefined;
   let resolved = symbol;
   if ((resolved.flags & ts.SymbolFlags.Alias) !== 0) resolved = checker.getAliasedSymbol(resolved);
-  const declaration = resolved.declarations?.find((item) => isSupportedSource(item.getSourceFile().fileName));
-  if (!declaration) return undefined;
+  return resolved;
+}
+
+function projectDefinitionForResolvedSymbol(program, resolved) {
+  if (!resolved) return { location: undefined, knownExternal: false };
+  const declarations = resolved.declarations || [];
+  const declaration = declarations.find((item) => {
+    const source = item.getSourceFile();
+    return isSupportedSource(source.fileName)
+      && !program.isSourceFileDefaultLibrary(source)
+      && !program.isSourceFileFromExternalLibrary(source);
+  });
+  if (!declaration) {
+    return { location: undefined, knownExternal: declarations.length > 0 };
+  }
   const source = declaration.getSourceFile();
   const nameNode = declaration.name;
   const start = nameNode ? nameNode.getStart(source) : declaration.getStart(source);
   const end = nameNode ? nameNode.getEnd() : declaration.getStart(source);
-  return locationForSpan(
-    source.fileName,
-    { start, length: Math.max(0, end - start) },
-    resolved.getName(),
-    true,
-  );
+  return {
+    location: locationForSpan(
+      source.fileName,
+      { start, length: Math.max(0, end - start) },
+      resolved.getName(),
+      true,
+    ),
+    knownExternal: false,
+  };
+}
+
+function staticCalleeName(expression) {
+  if (ts.isIdentifier(expression) || ts.isPrivateIdentifier(expression)) return expression.text;
+  if (expression.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (ts.isPropertyAccessExpression(expression)) {
+    const owner = staticCalleeName(expression.expression);
+    return owner ? `${owner}.${expression.name.text}` : expression.name.text;
+  }
+  if (ts.isElementAccessExpression(expression)
+    && (ts.isStringLiteral(expression.argumentExpression)
+      || ts.isNumericLiteral(expression.argumentExpression))) {
+    const owner = staticCalleeName(expression.expression);
+    return owner ? `${owner}.${expression.argumentExpression.text}` : expression.argumentExpression.text;
+  }
+  return undefined;
 }
 
 function projectCalleeLocations(service, definition) {
@@ -956,6 +1036,7 @@ function projectCalleeLocations(service, definition) {
   const container = declarationContainerAt(file, definition.textSpan.start);
   if (!container) return [];
   const callees = [];
+  const seen = new Set();
   function visit(node) {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const expression = node.expression;
@@ -963,24 +1044,32 @@ function projectCalleeLocations(service, definition) {
         ? expression.name || expression.argumentExpression
         : expression;
       const symbol = lookupNode ? checker.getSymbolAtLocation(lookupNode) : undefined;
-      const definitionLocation = definitionLocationForSymbol(checker, symbol);
-      if (definitionLocation) {
+      const resolvedSymbol = resolveAliasedSymbol(checker, symbol);
+      const { location: definitionLocation, knownExternal } = projectDefinitionForResolvedSymbol(
+        program,
+        resolvedSymbol,
+      );
+      const callee = definitionLocation?.symbol || (!knownExternal ? staticCalleeName(expression) : undefined);
+      if (callee) {
         const callStart = expression.getStart(file);
         const callEnd = expression.getEnd();
         const callLocation = locationForSpan(
           file.fileName,
           { start: callStart, length: callEnd - callStart },
-          definitionLocation.symbol,
+          callee,
           false,
         );
         if (callLocation) {
-          const key = `${callLocation.file}:${callLocation.start_line}:${callLocation.start_column}:${definitionLocation.file}:${definitionLocation.start_line}`;
-          if (!callees.some((item) => item.key === key)) {
+          const targetKey = definitionLocation
+            ? `${definitionLocation.file}:${definitionLocation.start_line}`
+            : "unresolved";
+          const key = `${callLocation.file}:${callLocation.start_line}:${callLocation.start_column}:${targetKey}`;
+          if (!seen.has(key)) {
+            seen.add(key);
             callees.push({
-              key,
-              callee: definitionLocation.symbol,
+              callee,
               location: callLocation,
-              definition: definitionLocation,
+              definition: definitionLocation || null,
             });
           }
         }
@@ -996,7 +1085,11 @@ function callerLocationAt(service, fileName, position) {
   const file = sourceFileFromProgram(service, fileName);
   if (!file) return undefined;
   const container = declarationContainerAt(file, position);
-  return container ? containerLocation(container) : undefined;
+  if (!container) return undefined;
+  const location = containerLocation(container);
+  return location
+    ? { location, definition: definitionAnchorForContainer(container) }
+    : undefined;
 }
 
 function implementationsOutput(service, position) {
@@ -1080,15 +1173,14 @@ function diagnosticsOutput(service) {
   if (request.symbol) {
     const position = targetPosition(service, request.symbol);
     const definition = position === undefined ? undefined : definitionEntryAtPosition(service, position);
-    if (definition) {
-      const definitionFile = sourceFileFromProgram(service, definition.fileName);
-      const container = definitionFile
-        ? declarationContainerAt(definitionFile, definition.textSpan.start)
-        : undefined;
-      symbolSpan = container
-        ? { start: container.getStart(definitionFile), length: container.getEnd() - container.getStart(definitionFile) }
-        : definition.textSpan;
-    }
+    if (!definition) return { diagnostics: [], truncated: false, symbol_found: false };
+    const definitionFile = sourceFileFromProgram(service, definition.fileName);
+    const container = definitionFile
+      ? declarationContainerAt(definitionFile, definition.textSpan.start)
+      : undefined;
+    symbolSpan = container
+      ? { start: container.getStart(definitionFile), length: container.getEnd() - container.getStart(definitionFile) }
+      : definition.textSpan;
   }
   const matching = diagnostics.filter((diagnostic) => {
     if (!symbolSpan || diagnostic.start === undefined) return true;
@@ -1114,6 +1206,7 @@ function diagnosticsOutput(service) {
         };
       }),
     truncated: limited.truncated,
+    symbol_found: true,
   };
 }
 
@@ -1170,20 +1263,20 @@ function hierarchyOutput(service, position) {
       const callees = projectCalleeLocations(service, current.definition);
       for (const callee of callees) {
         const target = callee.definition;
-        const from = addNode(current.location);
-        const to = addNode(target);
-        if (from === null || to === null) continue;
-        edges.set(`${from}->${to}:callee`, { from, to, relation: "callee" });
-        if (!visited.has(to)) {
-          visited.add(to);
-          const targetFile = sourceFileFromProgram(service, target.file);
-          const targetPosition = targetFile
-            ? positionForLineColumn(targetFile, target.start_line, target.start_column)
-            : undefined;
-          const nextDefinition = targetPosition === undefined
-            ? undefined
-            : service.getDefinitionAtPosition(target.file, targetPosition);
-          queue.push({ location: target, definition: nextDefinition?.[0] || current.definition, depth: current.depth + 1 });
+        if (!target) continue;
+        const caller = addNode(current.location);
+        const calleeId = addNode(target);
+        if (caller === null || calleeId === null) continue;
+        edges.set(`${caller}->${calleeId}`, { caller, callee: calleeId });
+        if (!visited.has(calleeId)) {
+          visited.add(calleeId);
+          // Queue expansion must be anchored at the discovered callee itself.
+          // Reusing `current.definition` here would assign the parent's body to
+          // a different graph node and manufacture unrelated edges.
+          const nextDefinition = callableDefinitionAnchorForLocation(service, target);
+          if (nextDefinition) {
+            queue.push({ location: target, definition: nextDefinition, depth: current.depth + 1 });
+          }
         }
       }
     }
@@ -1210,16 +1303,25 @@ function hierarchyOutput(service, position) {
         continue;
       }
       for (const reference of callSites) {
-        const caller = callerLocationAt(service, reference.fileName, reference.textSpan.start);
-        if (!caller) continue;
-        const from = addNode(caller);
-        const to = addNode(current.location);
-        if (from === null || to === null) continue;
-        edges.set(`${from}->${to}:caller`, { from, to, relation: "caller" });
-        if (!visited.has(from)) {
-          visited.add(from);
-          const callerDefinition = service.getDefinitionAtPosition(caller.file, reference.textSpan.start)?.[0];
-          queue.push({ location: caller, definition: callerDefinition || current.definition, depth: current.depth + 1 });
+        const callerNode = callerLocationAt(service, reference.fileName, reference.textSpan.start);
+        if (!callerNode) continue;
+        const caller = callerNode.location;
+        const callerId = addNode(caller);
+        const callee = addNode(current.location);
+        if (callerId === null || callee === null) continue;
+        edges.set(`${callerId}->${callee}`, { caller: callerId, callee });
+        if (!visited.has(callerId)) {
+          visited.add(callerId);
+          // The reference position resolves to the callee, not to its enclosing
+          // caller. `callerNode.definition` is deliberately derived from the
+          // caller's declaration container instead.
+          if (callerNode.definition) {
+            queue.push({
+              location: caller,
+              definition: callerNode.definition,
+              depth: current.depth + 1,
+            });
+          }
         }
       }
     }
