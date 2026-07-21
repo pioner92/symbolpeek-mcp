@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Write},
+    path::{Component, Path},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -131,19 +132,35 @@ fn assert_indexed_items(result: &Value, key: &str) {
 }
 
 fn assert_compact_indexed_rows(result: &Value, key: &str, expected_fields: &[&str]) {
-    assert!(result["files"].is_array());
+    let files = result["files"]
+        .as_array()
+        .expect("compact response should include a files table");
+    if let Some(base) = result.get("base").and_then(Value::as_str) {
+        assert!(Path::new(base).is_absolute());
+        assert!(files.iter().all(|file| {
+            file.as_str().is_some_and(|file| {
+                let file = Path::new(file);
+                !file.is_absolute()
+                    && !file
+                        .components()
+                        .any(|component| component == Component::ParentDir)
+                    && Path::new(base).join(file).is_absolute()
+            })
+        }));
+    } else {
+        assert!(files.iter().all(|file| file
+            .as_str()
+            .is_some_and(|file| Path::new(file).is_absolute())));
+    }
     assert_eq!(result["fields"], json!(expected_fields));
     assert!(result["truncated"].is_boolean());
     assert!(result[key].as_array().is_some_and(|items| {
         items.iter().all(|item| {
             item.as_array().is_some_and(|row| {
                 row.len() == expected_fields.len()
-                    && row[0].as_u64().is_some_and(|index| {
-                        index
-                            < result["files"]
-                                .as_array()
-                                .map_or(0, |files| files.len() as u64)
-                    })
+                    && row[0]
+                        .as_u64()
+                        .is_some_and(|index| index < u64::try_from(files.len()).unwrap_or(u64::MAX))
             })
         })
     }));

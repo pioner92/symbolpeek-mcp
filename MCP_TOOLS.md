@@ -86,12 +86,15 @@ Find project references to a symbol, including its definition.
 
 References are returned as compact tuple rows. `fields` defines each position
 once, and the integer in the `file` position indexes the top-level `files`
-table. `isDef` is `1` for the definition and `0` for an ordinary reference:
+table. When `base` is present, recover an absolute path with
+`base + files[file]`. `isDef` is `1` for the definition and `0` for an
+ordinary reference:
 
 ```json
 {
   "symbol": "useAuth",
-  "files": ["/project/src/auth.ts", "/project/src/dashboard.tsx"],
+  "base": "/project/src",
+  "files": ["auth.ts", "dashboard.tsx"],
   "fields": ["file", "startLine", "endLine", "startCol", "endCol", "isDef"],
   "refs": [[0, 5, 5, 14, 21, 1], [1, 18, 18, 27, 34, 0]],
   "truncated": false
@@ -101,10 +104,13 @@ table. `isDef` is `1` for the definition and `0` for an ordinary reference:
 `find_references`, `find_callers`, and `find_implementations` accept optional
 `max_results` (default 200, capped at 1000) and `offset` (default 0). When
 another page exists, they return `truncated: true` and `next_offset`; pass that
-value back as `offset`. Each page has its own `files` table, so resolve the
-`file` tuple position before combining pages. `find_callees` keeps the object
-format and its existing `next_offset` field. `search_symbols` supports the same
-result limit and `truncated` flag but is not offset-paginated yet.
+value back as `offset`. Each page has its own `base` and `files` table, so
+resolve the `file` tuple position before combining pages. The deepest common
+directory is emitted as `base`, and `files` contains paths relative to it. If
+a safe common base cannot be represented, `base` is omitted and `files`
+contains absolute paths. `find_callees` keeps the object format and its existing
+`next_offset` field. `search_symbols` supports the same result limit and
+`truncated` flag but is not offset-paginated yet.
 
 ## `find_callers`
 
@@ -177,7 +183,8 @@ other tools, such as `function`, `react_component`, `hook`, `class`,
 tuples with `fields` equal to
 `["file", "name", "kind", "startLine", "endLine", "startCol", "endCol"]`.
 The integer `file` position indexes `files[]`. The default limit is 200, the
-maximum is 1000, and `truncated` reports omitted matches.
+maximum is 1000, and `truncated` reports omitted matches. Path reconstruction
+uses the same optional `base` contract as `find_references`.
 
 ## `get_type`
 
@@ -209,7 +216,8 @@ contract at the requested symbol.
 Results use compact `impls` tuples with `fields` equal to
 `["file", "symbol", "startLine", "endLine", "startCol", "endCol", "isDef"]`.
 The integer `file` position indexes `files[]`; `isDef` is encoded as `1` or
-`0`. The tool supports optional `max_results` and `offset` pagination fields.
+`0`. Paths use the same optional `base` contract as `find_references`. The tool
+supports optional `max_results` and `offset` pagination fields.
 
 ## `get_document_outline`
 

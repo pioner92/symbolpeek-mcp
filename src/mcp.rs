@@ -1,5 +1,6 @@
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 use crate::types::{
     CallersResult, ImplementationsResult, ListSymbolsResult, ReferencesResult, SearchSymbolsResult,
@@ -49,9 +50,67 @@ type SearchSymbolRow<'a> = (usize, &'a str, SymbolKind, usize, usize, usize, usi
 type ListSymbolRow<'a> = (&'a str, SymbolKind, usize, usize, Option<&'a str>);
 
 #[derive(Serialize)]
+struct CompactPathTable {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+impl CompactPathTable {
+    fn from_paths(paths: &[PathBuf]) -> Self {
+        let Some(first) = paths.first() else {
+            return Self {
+                base: None,
+                files: Vec::new(),
+            };
+        };
+        if paths.iter().any(|path| !path.is_absolute()) {
+            return Self::absolute(paths);
+        }
+
+        let Some(mut base) = first.parent().map(Path::to_path_buf) else {
+            return Self::absolute(paths);
+        };
+        for path in &paths[1..] {
+            while !path.starts_with(&base) {
+                if !base.pop() {
+                    return Self::absolute(paths);
+                }
+            }
+        }
+
+        // A filesystem root is technically common, but serializing `base: "/"`
+        // costs more than it saves and provides no useful grouping.
+        if base.file_name().is_none() {
+            return Self::absolute(paths);
+        }
+
+        let Some(files) = paths
+            .iter()
+            .map(|path| path.strip_prefix(&base).ok().map(Path::to_path_buf))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Self::absolute(paths);
+        };
+        Self {
+            base: Some(base),
+            files,
+        }
+    }
+
+    fn absolute(paths: &[PathBuf]) -> Self {
+        Self {
+            base: None,
+            files: paths.to_vec(),
+        }
+    }
+}
+
+#[derive(Serialize)]
 pub(crate) struct CompactReferencesResult<'a> {
     symbol: &'a str,
-    files: &'a [std::path::PathBuf],
+    #[serde(flatten)]
+    paths: CompactPathTable,
     fields: &'static [&'static str],
     refs: Vec<ReferenceRow>,
     truncated: bool,
@@ -62,7 +121,8 @@ pub(crate) struct CompactReferencesResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactImplementationsResult<'a> {
     symbol: &'a str,
-    files: &'a [std::path::PathBuf],
+    #[serde(flatten)]
+    paths: CompactPathTable,
     fields: &'static [&'static str],
     impls: Vec<ImplementationRow<'a>>,
     truncated: bool,
@@ -73,7 +133,8 @@ pub(crate) struct CompactImplementationsResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactCallersResult<'a> {
     symbol: &'a str,
-    files: &'a [std::path::PathBuf],
+    #[serde(flatten)]
+    paths: CompactPathTable,
     fields: &'static [&'static str],
     callers: Vec<CallerRow<'a>>,
     truncated: bool,
@@ -84,7 +145,8 @@ pub(crate) struct CompactCallersResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactSearchSymbolsResult<'a> {
     query: &'a str,
-    files: &'a [std::path::PathBuf],
+    #[serde(flatten)]
+    paths: CompactPathTable,
     fields: &'static [&'static str],
     symbols: Vec<SearchSymbolRow<'a>>,
     truncated: bool,
@@ -104,7 +166,7 @@ pub(crate) struct CompactListSymbolsResult<'a> {
 pub(crate) fn compact_references(result: &ReferencesResult) -> CompactReferencesResult<'_> {
     CompactReferencesResult {
         symbol: &result.symbol,
-        files: &result.files,
+        paths: CompactPathTable::from_paths(&result.files),
         fields: &REFERENCE_FIELDS,
         refs: result
             .references
@@ -131,7 +193,7 @@ pub(crate) fn compact_implementations(
 ) -> CompactImplementationsResult<'_> {
     CompactImplementationsResult {
         symbol: &result.symbol,
-        files: &result.files,
+        paths: CompactPathTable::from_paths(&result.files),
         fields: &IMPLEMENTATION_FIELDS,
         impls: result
             .implementations
@@ -157,7 +219,7 @@ pub(crate) fn compact_implementations(
 pub(crate) fn compact_callers(result: &CallersResult) -> CompactCallersResult<'_> {
     CompactCallersResult {
         symbol: &result.symbol,
-        files: &result.files,
+        paths: CompactPathTable::from_paths(&result.files),
         fields: &CALLER_FIELDS,
         callers: result
             .callers
@@ -184,7 +246,7 @@ pub(crate) fn compact_search_symbols(
 ) -> CompactSearchSymbolsResult<'_> {
     CompactSearchSymbolsResult {
         query: &result.query,
-        files: &result.files,
+        paths: CompactPathTable::from_paths(&result.files),
         fields: &SEARCH_SYMBOL_FIELDS,
         symbols: result
             .symbols
@@ -240,4 +302,65 @@ pub fn json_result<T: Serialize>(value: &T) -> CallToolResult {
 #[must_use]
 pub fn unsupported_result() -> CallToolResult {
     json_result(&serde_json::json!({ "supported": false }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompactPathTable;
+    use std::path::PathBuf;
+
+    #[test]
+    fn compacts_paths_to_the_deepest_common_directory() {
+        let root = std::env::temp_dir().join("symbolpeek-compact-paths");
+        let paths = vec![
+            root.join("app/shared/constants.ts"),
+            root.join("app/modules/chats/constants.ts"),
+        ];
+
+        let compact = CompactPathTable::from_paths(&paths);
+
+        assert_eq!(compact.base, Some(root.join("app")));
+        assert_eq!(
+            compact.files,
+            vec![
+                PathBuf::from("shared/constants.ts"),
+                PathBuf::from("modules/chats/constants.ts"),
+            ]
+        );
+    }
+
+    #[test]
+    fn shrinks_the_base_when_a_file_is_outside_the_first_branch() {
+        let root = std::env::temp_dir().join("symbolpeek-compact-paths");
+        let paths = vec![root.join("app/shared/a.ts"), root.join("README.ts")];
+
+        let compact = CompactPathTable::from_paths(&paths);
+
+        assert_eq!(compact.base, Some(root));
+        assert_eq!(
+            compact.files,
+            vec![PathBuf::from("app/shared/a.ts"), PathBuf::from("README.ts")]
+        );
+    }
+
+    #[test]
+    fn keeps_absolute_paths_when_the_input_cannot_share_a_safe_base() {
+        let paths = vec![
+            PathBuf::from("relative/a.ts"),
+            PathBuf::from("relative/b.ts"),
+        ];
+
+        let compact = CompactPathTable::from_paths(&paths);
+
+        assert_eq!(compact.base, None);
+        assert_eq!(compact.files, paths);
+    }
+
+    #[test]
+    fn leaves_an_empty_path_table_without_a_base() {
+        let compact = CompactPathTable::from_paths(&[]);
+
+        assert_eq!(compact.base, None);
+        assert!(compact.files.is_empty());
+    }
 }

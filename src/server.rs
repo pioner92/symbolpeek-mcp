@@ -172,6 +172,10 @@ fn collect_files(
 ) {
     match value {
         serde_json::Value::Object(map) => {
+            let base = map
+                .get("base")
+                .and_then(serde_json::Value::as_str)
+                .map(std::path::PathBuf::from);
             for (key, child) in map {
                 if key == "file" {
                     if let serde_json::Value::String(path) = child {
@@ -181,7 +185,11 @@ fn collect_files(
                     if let serde_json::Value::Array(paths) = child {
                         for path in paths {
                             if let serde_json::Value::String(path) = path {
-                                out.insert(std::path::PathBuf::from(path));
+                                let path = std::path::PathBuf::from(path);
+                                out.insert(match (&base, path.is_absolute()) {
+                                    (Some(base), false) => base.join(path),
+                                    _ => path,
+                                });
                             }
                         }
                     }
@@ -739,6 +747,25 @@ mod tests {
             files,
             BTreeSet::from([
                 PathBuf::from("/project/src/caller.ts"),
+                PathBuf::from("/project/src/query.ts"),
+            ])
+        );
+    }
+
+    #[test]
+    fn resolves_compact_relative_file_tables_for_statistics() {
+        let value = json!({
+            "base": "/project/src",
+            "files": ["query.ts", "features/caller.ts"]
+        });
+        let mut files = BTreeSet::new();
+
+        collect_files(&value, &mut files);
+
+        assert_eq!(
+            files,
+            BTreeSet::from([
+                PathBuf::from("/project/src/features/caller.ts"),
                 PathBuf::from("/project/src/query.ts"),
             ])
         );
