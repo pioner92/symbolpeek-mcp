@@ -11,5 +11,9 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 export SYMBOLPEEK_TYPESCRIPT_ROOT=${SYMBOLPEEK_TYPESCRIPT_ROOT:-$PROJECT_ROOT}
-export SYMBOLPEEK_WORKSPACE_ROOT=${SYMBOLPEEK_WORKSPACE_ROOT:-$(pwd)}
+# A globally installed server must not mistake its installation directory for
+# the project being analyzed. Relative paths still work through an explicit
+# workspace override or MCP client roots; otherwise callers receive a clear
+# error and can use an absolute path.
+export SYMBOLPEEK_ALLOW_CWD_FALLBACK=${SYMBOLPEEK_ALLOW_CWD_FALLBACK:-false}
 exec "$BINARY" "$@"

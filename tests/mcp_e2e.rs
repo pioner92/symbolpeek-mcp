@@ -19,20 +19,28 @@ static NEXT_STATISTICS_PATH: AtomicU64 = AtomicU64::new(0);
 
 impl McpClientProcess {
     fn start() -> Self {
+        Self::start_with_workspace_root(Some(Path::new(env!("CARGO_MANIFEST_DIR"))))
+    }
+
+    fn start_with_workspace_root(workspace_root: Option<&Path>) -> Self {
         let sequence = NEXT_STATISTICS_PATH.fetch_add(1, Ordering::Relaxed);
         let statistics_path = std::env::temp_dir().join(format!(
             "symbolpeek-mcp-e2e-{}-{sequence}.json",
             std::process::id()
         ));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_symbolpeek"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_symbolpeek"));
+        command
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .env("SYMBOLPEEK_STATS_PATH", &statistics_path)
-            .env("SYMBOLPEEK_WORKSPACE_ROOT", env!("CARGO_MANIFEST_DIR"))
+            .env("SYMBOLPEEK_ALLOW_CWD_FALLBACK", "false")
+            .env_remove("SYMBOLPEEK_WORKSPACE_ROOT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("MCP server should start");
+            .stderr(Stdio::null());
+        if let Some(workspace_root) = workspace_root {
+            command.env("SYMBOLPEEK_WORKSPACE_ROOT", workspace_root);
+        }
+        let mut child = command.spawn().expect("MCP server should start");
         let stdin = child.stdin.take().expect("server stdin should be piped");
         let stdout = child.stdout.take().expect("server stdout should be piped");
         Self {
@@ -76,13 +84,17 @@ impl McpClientProcess {
     }
 
     fn initialize(&mut self) -> Value {
+        self.initialize_with_capabilities(&json!({}))
+    }
+
+    fn initialize_with_capabilities(&mut self, capabilities: &Value) -> Value {
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
+                "capabilities": capabilities,
                 "clientInfo": {"name": "symbolpeek-tests", "version": "1.0.0"}
             }
         }));
@@ -310,6 +322,7 @@ fn assert_exact_path_schema_descriptions(tools: &[Value]) {
             .and_then(Value::as_str)
             .expect("file-based tool should describe its path input");
         assert!(path_description.contains("Exact existing"));
+        assert!(path_description.contains("MCP client roots"));
         assert!(path_description.contains("Module aliases"));
         assert!(path_description.contains("implicit index files are not resolved"));
     }
@@ -320,6 +333,7 @@ fn assert_exact_path_schema_descriptions(tools: &[Value]) {
         .and_then(Value::as_str)
         .expect("search_symbols should describe its workspace path input");
     assert!(search_path_description.contains("Exact existing workspace directory path"));
+    assert!(search_path_description.contains("MCP client roots"));
     assert!(!search_path_description.contains("implicit index files"));
 }
 
@@ -879,7 +893,7 @@ fn handles_ast_intelligence_requests() {
 #[test]
 fn resolves_relative_paths_against_configured_workspace_root() {
     let mut client = McpClientProcess::start();
-    let _ = client.initialize();
+    let _ = client.initialize_with_capabilities(&json!({"roots": {}}));
 
     client.send(&call(
         "list_symbols",
@@ -903,6 +917,121 @@ fn resolves_relative_paths_against_configured_workspace_root() {
         .is_some_and(|symbol| symbol.len() == 5));
 
     client.shutdown();
+}
+
+#[test]
+fn resolves_first_relative_request_against_mcp_client_roots() {
+    let workspace = std::env::temp_dir().join(format!(
+        "symbolpeek roots {}",
+        NEXT_STATISTICS_PATH.fetch_add(1, Ordering::Relaxed)
+    ));
+    let source_path = workspace.join("src/rooted.ts");
+    std::fs::create_dir_all(source_path.parent().expect("source should have parent"))
+        .expect("workspace should be creatable");
+    std::fs::write(&source_path, "export const fromClientRoot = 1;\n")
+        .expect("rooted fixture should be writable");
+
+    let mut client = McpClientProcess::start_with_workspace_root(None);
+    let _ = client.initialize_with_capabilities(&json!({"roots": {"listChanged": true}}));
+    client.send(&call("list_symbols", 70, &json!({"path": "src/rooted.ts"})));
+
+    let roots_request = client.receive();
+    assert_eq!(roots_request["method"], "roots/list");
+    let root_uri = format!("file://{}", workspace.to_string_lossy().replace(' ', "%20"));
+    client.send(&json!({
+        "jsonrpc": "2.0",
+        "id": roots_request["id"].clone(),
+        "result": {"roots": [{"uri": root_uri, "name": "fixture"}]}
+    }));
+
+    let response = client.receive();
+    assert_eq!(response["id"], 70);
+    assert!(response["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|symbols| symbols.iter().any(|symbol| symbol[0] == "fromClientRoot")));
+
+    client.shutdown();
+    std::fs::remove_dir_all(workspace).expect("workspace should be removable");
+}
+
+#[test]
+fn rejects_unbased_relative_paths_but_keeps_absolute_paths_working() {
+    let mut client = McpClientProcess::start_with_workspace_root(None);
+    let _ = client.initialize();
+
+    client.send(&call(
+        "list_symbols",
+        71,
+        &json!({"path": "tests/fixtures/sample.tsx"}),
+    ));
+    let relative = client.receive();
+    assert_eq!(relative["error"]["code"], -32602);
+    assert!(relative["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("no workspace root is available")));
+    assert!(!relative["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains(env!("CARGO_MANIFEST_DIR"))));
+
+    client.send(&call("list_symbols", 72, &json!({"path": fixture_path()})));
+    let absolute = client.receive();
+    assert!(absolute["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|symbols| symbols.iter().any(|symbol| symbol[0] == "sendMessage")));
+
+    client.shutdown();
+}
+
+#[test]
+fn multi_root_paths_require_exactly_one_existing_match() {
+    let sequence = NEXT_STATISTICS_PATH.fetch_add(1, Ordering::Relaxed);
+    let root_a = std::env::temp_dir().join(format!("symbolpeek-multi-a-{sequence}"));
+    let root_b = std::env::temp_dir().join(format!("symbolpeek-multi-b-{sequence}"));
+    for root in [&root_a, &root_b] {
+        std::fs::create_dir_all(root.join("src")).expect("workspace should be creatable");
+        std::fs::write(root.join("src/shared.ts"), "export const shared = 1;\n")
+            .expect("shared fixture should be writable");
+    }
+    std::fs::write(
+        root_a.join("src/unique.ts"),
+        "export const uniqueToRootA = 1;\n",
+    )
+    .expect("unique fixture should be writable");
+
+    let mut client = McpClientProcess::start_with_workspace_root(None);
+    let _ = client.initialize_with_capabilities(&json!({"roots": {}}));
+    client.send(&call("list_symbols", 73, &json!({"path": "src/unique.ts"})));
+    let roots_request = client.receive();
+    assert_eq!(roots_request["method"], "roots/list");
+    client.send(&json!({
+        "jsonrpc": "2.0",
+        "id": roots_request["id"].clone(),
+        "result": {"roots": [
+            {"uri": format!("file://{}", root_a.display())},
+            {"uri": format!("file://{}", root_b.display())}
+        ]}
+    }));
+    let unique = client.receive();
+    assert!(unique["result"]["structuredContent"]["symbols"]
+        .as_array()
+        .is_some_and(|symbols| symbols.iter().any(|symbol| symbol[0] == "uniqueToRootA")));
+
+    client.send(&call("list_symbols", 74, &json!({"path": "src/shared.ts"})));
+    let ambiguous = client.receive();
+    assert_eq!(ambiguous["error"]["code"], -32602);
+    assert!(ambiguous["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("ambiguous across workspace roots")));
+    assert!(ambiguous["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains(&root_a.display().to_string())));
+    assert!(ambiguous["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains(&root_b.display().to_string())));
+
+    client.shutdown();
+    std::fs::remove_dir_all(root_a).expect("first workspace should be removable");
+    std::fs::remove_dir_all(root_b).expect("second workspace should be removable");
 }
 
 #[test]

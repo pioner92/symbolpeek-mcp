@@ -286,9 +286,13 @@ and semantic tools continue operating normally.
 
 ## Using the tools
 
-Absolute file paths are safest when used from an external MCP client. Relative
-paths are resolved against the MCP process working directory, or against
-`SYMBOLPEEK_WORKSPACE_ROOT` when that optional override is explicitly set.
+Absolute file paths are the canonical, most reliable input from an external MCP
+client. Relative paths first use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then
+filesystem roots supplied by a compatible MCP client. Multi-root workspaces are
+resolved only when exactly one root contains the requested path. Direct binary
+launches retain process-working-directory fallback; the global release wrapper
+disables that fallback so it cannot mistake the SymbolPeek installation
+directory for the project being analyzed.
 Supported files are parsed from their current contents for every request.
 
 Every tool's request shape, options, and response format is documented in the
@@ -352,13 +356,15 @@ environment variables are available for advanced setups:
 | Variable | Purpose |
 | --- | --- |
 | `SYMBOLPEEK_WORKSPACE_ROOT` | Optional workspace root used to resolve relative source paths. |
+| `SYMBOLPEEK_ALLOW_CWD_FALLBACK` | Allow relative paths to fall back to the process working directory (default `true`; release wrapper default `false`). |
 | `SYMBOLPEEK_TYPESCRIPT_ROOT` | Directory containing the installed TypeScript runtime. |
 | `SYMBOLPEEK_NODE` | Explicit Node.js executable to launch the parser worker. |
 | `SYMBOLPEEK_STATS_PATH` | Override the lifetime statistics JSON path. |
 
 For a global MCP installation, do not set `SYMBOLPEEK_WORKSPACE_ROOT` to a
-fixed project. Use absolute paths, or let the MCP client launch SymbolPeek
-with the active project as its working directory. Set
+fixed project. Use absolute paths, or let a compatible MCP client provide its
+filesystem roots. The release wrapper deliberately disables cwd fallback so a
+relative path never resolves against the SymbolPeek checkout by accident. Set
 `SYMBOLPEEK_WORKSPACE_ROOT` only for a deliberately project-scoped launch.
 Set `SYMBOLPEEK_TYPESCRIPT_ROOT` separately to the directory containing the
 SymbolPeek `node_modules` runtime.

@@ -13,6 +13,20 @@ pub enum SymbolPeekError {
     #[error("file not found: {path}")]
     FileNotFound { path: PathBuf },
 
+    #[error(
+        "relative path '{path}' cannot be resolved: no workspace root is available; use an absolute path, configure SYMBOLPEEK_WORKSPACE_ROOT, or use an MCP client that provides workspace roots"
+    )]
+    WorkspaceRootRequired { path: PathBuf },
+
+    #[error("relative path '{path}' was not found under any workspace root: {roots}")]
+    RelativePathNotFound { path: PathBuf, roots: String },
+
+    #[error("relative path '{path}' is ambiguous across workspace roots: {matches}")]
+    AmbiguousRelativePath { path: PathBuf, matches: String },
+
+    #[error("failed to obtain workspace roots from the MCP client: {message}")]
+    WorkspaceRootsUnavailable { message: String },
+
     #[error("failed to read {path}: {source}")]
     ReadFile {
         path: PathBuf,

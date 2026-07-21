@@ -1,8 +1,8 @@
-use std::{io::IsTerminal, path::Path};
+use std::{io::IsTerminal, path::Path, path::PathBuf, sync::Arc};
 
 use rmcp::{
     handler::server::wrapper::Parameters, tool, tool_handler, tool_router, ErrorData as McpError,
-    ServerHandler,
+    Peer, RoleServer, ServerHandler,
 };
 
 use crate::{
@@ -28,6 +28,13 @@ pub struct SymbolPeekServer {
     source_loader: std::sync::Arc<dyn SourceLoader>,
     statistics: std::sync::Arc<SessionStatistics>,
     lifetime_statistics: std::sync::Arc<LifetimeStatistics>,
+    client_roots: Arc<tokio::sync::Mutex<ClientRootsState>>,
+}
+
+#[derive(Debug, Default)]
+struct ClientRootsState {
+    loaded: bool,
+    roots: Vec<PathBuf>,
 }
 
 impl SymbolPeekServer {
@@ -77,17 +84,20 @@ impl SymbolPeekServer {
             source_loader,
             statistics,
             lifetime_statistics,
+            client_roots: Arc::new(tokio::sync::Mutex::new(ClientRootsState::default())),
         }
     }
 
-    fn parse_file(
+    async fn parse_file(
         &self,
         path: &str,
+        peer: &Peer<RoleServer>,
     ) -> Result<
         (filesystem::SourceFile, Box<dyn crate::language::ParsedFile>),
         crate::errors::SymbolPeekError,
     > {
-        let file = self.source_loader.load(path)?;
+        let path = self.resolve_request_path(path, peer).await?;
+        let file = self.source_loader.load(&path.to_string_lossy())?;
         let adapter = self.registry.adapter_for(&file.path).ok_or_else(|| {
             crate::errors::SymbolPeekError::UnsupportedExtension {
                 path: file.path.clone(),
@@ -95,6 +105,61 @@ impl SymbolPeekServer {
         })?;
         let parsed = adapter.parse(&file)?;
         Ok((file, parsed))
+    }
+
+    async fn resolve_request_path(
+        &self,
+        path: &str,
+        peer: &Peer<RoleServer>,
+    ) -> Result<PathBuf, crate::errors::SymbolPeekError> {
+        if Path::new(path).is_absolute() || filesystem::has_workspace_root_override() {
+            return filesystem::resolve_input_path(path);
+        }
+
+        let roots = self.client_workspace_roots(peer).await?;
+        filesystem::resolve_input_path_with_roots(path, &roots)
+    }
+
+    #[allow(deprecated)]
+    async fn client_workspace_roots(
+        &self,
+        peer: &Peer<RoleServer>,
+    ) -> Result<Vec<PathBuf>, crate::errors::SymbolPeekError> {
+        let mut state = self.client_roots.lock().await;
+        if state.loaded {
+            return Ok(state.roots.clone());
+        }
+
+        let supports_roots = peer
+            .peer_info()
+            .is_some_and(|info| info.capabilities.roots.is_some());
+        if !supports_roots {
+            state.loaded = true;
+            return Ok(Vec::new());
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), peer.list_roots())
+            .await
+            .map_err(
+                |_| crate::errors::SymbolPeekError::WorkspaceRootsUnavailable {
+                    message: "client did not answer roots/list within 3 seconds".to_owned(),
+                },
+            )?
+            .map_err(
+                |error| crate::errors::SymbolPeekError::WorkspaceRootsUnavailable {
+                    message: error.to_string(),
+                },
+            )?;
+        let mut roots = result
+            .roots
+            .iter()
+            .filter_map(|root| filesystem::path_from_file_uri(&root.uri))
+            .collect::<Vec<_>>();
+        roots.sort();
+        roots.dedup();
+        state.loaded = true;
+        state.roots.clone_from(&roots);
+        Ok(roots)
     }
 
     /// Records one request against both statistics scopes.
@@ -219,13 +284,15 @@ impl SymbolPeekServer {
     )]
     async fn read_symbol(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ReadSymbolResult = parsed
             .read_symbol(&file, &request.symbol)
@@ -239,13 +306,15 @@ impl SymbolPeekServer {
     )]
     async fn list_symbols(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<ListSymbolsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ListSymbolsResult =
             parsed.list_symbols(&file, request.max_results, request.offset);
@@ -259,13 +328,15 @@ impl SymbolPeekServer {
     )]
     async fn find_dependencies(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: DependencyResult = parsed
             .find_dependencies(&file, &request.symbol)
@@ -279,13 +350,15 @@ impl SymbolPeekServer {
     )]
     async fn find_references(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ReferencesResult = parsed
             .find_references(&file, &request)
@@ -300,13 +373,15 @@ impl SymbolPeekServer {
     )]
     async fn find_callers(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: CallersResult = parsed
             .find_callers(&file, &request)
@@ -321,13 +396,15 @@ impl SymbolPeekServer {
     )]
     async fn go_to_definition(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<LocationRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: DefinitionResult = parsed
             .go_to_definition(&file, request.line, request.column)
@@ -341,13 +418,15 @@ impl SymbolPeekServer {
     )]
     async fn read_symbol_context(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: SymbolContextResult = parsed
             .read_context(&file, &request.symbol)
@@ -361,9 +440,12 @@ impl SymbolPeekServer {
     )]
     async fn search_symbols(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<SearchSymbolsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        let root = filesystem::resolve_input_path(&request.path)
+        let root = self
+            .resolve_request_path(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         if !root.is_dir() {
             return Err(crate::errors::SymbolPeekError::FileNotFound { path: root }.into_mcp());
@@ -390,13 +472,15 @@ impl SymbolPeekServer {
     )]
     async fn find_implementations(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: ImplementationsResult = parsed
             .find_implementations(&file, &request)
@@ -411,13 +495,15 @@ impl SymbolPeekServer {
     )]
     async fn get_type(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<LocationRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: TypeInfoResult = parsed
             .get_type(&file, &request)
@@ -431,13 +517,15 @@ impl SymbolPeekServer {
     )]
     async fn get_document_outline(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<DocumentOutlineRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: DocumentOutlineResult = parsed
             .get_document_outline(&file, request.max_results)
@@ -452,13 +540,15 @@ impl SymbolPeekServer {
     )]
     async fn find_callees(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: CalleesResult = parsed
             .find_callees(&file, &request)
@@ -471,14 +561,19 @@ impl SymbolPeekServer {
     #[tool(description = "Return TypeScript compiler diagnostics for a file or for one symbol.")]
     async fn get_diagnostics(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
+        let path = self
+            .resolve_request_path(&request.path, &peer)
+            .await
+            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let file = self
             .source_loader
-            .load(&request.path)
+            .load(&path.to_string_lossy())
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let adapter = self
             .registry
@@ -499,13 +594,15 @@ impl SymbolPeekServer {
     )]
     async fn get_call_hierarchy(
         &self,
+        peer: Peer<RoleServer>,
         Parameters(request): Parameters<CallHierarchyRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
         let (file, parsed) = self
-            .parse_file(&request.path)
+            .parse_file(&request.path, &peer)
+            .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let result: CallHierarchyResult = parsed
             .get_call_hierarchy(&file, &request)
@@ -532,7 +629,16 @@ impl SymbolPeekServer {
     version = "0.1.0",
     instructions = "Retrieve minimal AST-backed context from TypeScript and JavaScript source files."
 )]
-impl ServerHandler for SymbolPeekServer {}
+impl ServerHandler for SymbolPeekServer {
+    async fn on_roots_list_changed(
+        &self,
+        _context: rmcp::service::NotificationContext<RoleServer>,
+    ) {
+        let mut state = self.client_roots.lock().await;
+        state.loaded = false;
+        state.roots.clear();
+    }
+}
 
 /// Prints lifetime statistics for the `symbolpeek stats` CLI command.
 pub fn print_cli_statistics(reset_lifetime: bool) {

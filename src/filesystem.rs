@@ -49,12 +49,75 @@ pub fn load_source(path: &str) -> Result<SourceFile, SymbolPeekError> {
 ///
 /// Returns an error when the process cwd cannot be determined.
 pub fn resolve_input_path(path: &str) -> Result<PathBuf, SymbolPeekError> {
-    resolve_source_path(PathBuf::from(path))
+    resolve_input_path_with_roots(path, &[])
+}
+
+/// Resolves an input path using this precedence: absolute input, explicit
+/// `SYMBOLPEEK_WORKSPACE_ROOT`, MCP client roots, then the process cwd when its
+/// fallback is enabled.
+///
+/// Multiple client roots are safe: an existing path must match exactly one
+/// root. This prevents a relative path from silently selecting the wrong
+/// project in a multi-root workspace.
+///
+/// # Errors
+///
+/// Returns a structured error when no base is available or a multi-root lookup
+/// is missing or ambiguous.
+pub fn resolve_input_path_with_roots(
+    path: &str,
+    client_roots: &[PathBuf],
+) -> Result<PathBuf, SymbolPeekError> {
+    resolve_source_path(PathBuf::from(path), client_roots)
+}
+
+/// Returns whether an explicit workspace override is configured.
+#[must_use]
+pub fn has_workspace_root_override() -> bool {
+    std::env::var_os("SYMBOLPEEK_WORKSPACE_ROOT").is_some()
+}
+
+/// Converts an MCP `file://` root URI into a local filesystem path.
+///
+/// Non-file and malformed URIs are ignored by returning `None`.
+#[must_use]
+pub fn path_from_file_uri(uri: &str) -> Option<PathBuf> {
+    let (scheme, encoded) = uri.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("file") {
+        return None;
+    }
+    let decoded = percent_decode(encoded)?;
+
+    #[cfg(windows)]
+    {
+        if decoded
+            .get(..10)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("localhost/"))
+        {
+            return Some(PathBuf::from(&decoded[10..]));
+        }
+        if let Some(path) = decoded.strip_prefix('/') {
+            return Some(PathBuf::from(path));
+        }
+        let (host, path) = decoded.split_once('/')?;
+        (!host.is_empty()).then(|| PathBuf::from(format!(r"\\{host}\{path}")))
+    }
+
+    #[cfg(not(windows))]
+    {
+        if decoded
+            .get(..10)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("localhost/"))
+        {
+            return Some(PathBuf::from(format!("/{}", &decoded[10..])));
+        }
+        decoded.starts_with('/').then(|| PathBuf::from(decoded))
+    }
 }
 
 fn load_source_impl(path: &str) -> Result<SourceFile, SymbolPeekError> {
     let requested_path = PathBuf::from(path);
-    let path = resolve_source_path(requested_path)?;
+    let path = resolve_source_path(requested_path, &[])?;
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -81,27 +144,108 @@ fn load_source_impl(path: &str) -> Result<SourceFile, SymbolPeekError> {
     })
 }
 
-fn resolve_source_path(path: PathBuf) -> Result<PathBuf, SymbolPeekError> {
+fn resolve_source_path(
+    path: PathBuf,
+    client_roots: &[PathBuf],
+) -> Result<PathBuf, SymbolPeekError> {
     if path.is_absolute() {
         return Ok(path);
     }
 
-    let base = match std::env::var_os("SYMBOLPEEK_WORKSPACE_ROOT") {
-        Some(root) => PathBuf::from(root),
-        None => std::env::current_dir().map_err(|source| SymbolPeekError::ReadFile {
-            path: path.clone(),
-            source,
-        })?,
-    };
-    if base.is_absolute() {
-        return Ok(base.join(path));
+    if let Some(root) = std::env::var_os("SYMBOLPEEK_WORKSPACE_ROOT") {
+        return resolve_against_base(PathBuf::from(root), path);
+    }
+
+    let mut roots = client_roots.to_vec();
+    roots.sort();
+    roots.dedup();
+    match roots.as_slice() {
+        [root] => return Ok(root.join(path)),
+        [_, _, ..] => {
+            let matches = roots
+                .iter()
+                .map(|root| root.join(&path))
+                .filter(|candidate| candidate.exists())
+                .collect::<Vec<_>>();
+            return match matches.as_slice() {
+                [candidate] => Ok(candidate.clone()),
+                [] => Err(SymbolPeekError::RelativePathNotFound {
+                    path,
+                    roots: display_paths(&roots),
+                }),
+                _ => Err(SymbolPeekError::AmbiguousRelativePath {
+                    path,
+                    matches: display_paths(&matches),
+                }),
+            };
+        }
+        [] => {}
+    }
+
+    if !cwd_fallback_enabled() {
+        return Err(SymbolPeekError::WorkspaceRootRequired { path });
     }
 
     let current_dir = std::env::current_dir().map_err(|source| SymbolPeekError::ReadFile {
         path: path.clone(),
         source,
     })?;
+    Ok(current_dir.join(path))
+}
+
+fn resolve_against_base(base: PathBuf, path: PathBuf) -> Result<PathBuf, SymbolPeekError> {
+    if base.is_absolute() {
+        return Ok(base.join(path));
+    }
+    let current_dir = std::env::current_dir().map_err(|source| SymbolPeekError::ReadFile {
+        path: path.clone(),
+        source,
+    })?;
     Ok(current_dir.join(base).join(path))
+}
+
+fn cwd_fallback_enabled() -> bool {
+    std::env::var("SYMBOLPEEK_ALLOW_CWD_FALLBACK").map_or(true, |value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            decoded.push(hex_value(high)? * 16 + hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+const fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub fn is_supported(path: &Path) -> bool {

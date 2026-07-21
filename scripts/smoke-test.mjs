@@ -152,6 +152,7 @@ try {
   ]) {
     const description = toolByName.get(name)?.inputSchema?.properties?.path?.description ?? "";
     if (!description.includes("Exact existing")
+      || !description.includes("MCP client roots")
       || !description.includes("implicit index files are not resolved")) {
       throw new Error(`${name} did not publish the exact source-file path contract`);
     }
@@ -159,6 +160,7 @@ try {
   const searchPathDescription = toolByName.get("search_symbols")
     ?.inputSchema?.properties?.path?.description ?? "";
   if (!searchPathDescription.includes("Exact existing workspace directory path")
+    || !searchPathDescription.includes("MCP client roots")
     || searchPathDescription.includes("implicit index files")) {
     throw new Error("search_symbols did not publish its workspace-directory path contract");
   }

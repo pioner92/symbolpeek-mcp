@@ -6,7 +6,7 @@ use std::{
 
 use symbolpeek::{
     errors::SymbolPeekError,
-    filesystem::{is_supported, load_source},
+    filesystem::{is_supported, load_source, path_from_file_uri},
 };
 
 fn test_directory() -> PathBuf {
@@ -91,4 +91,28 @@ fn reports_permission_failures() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
         .expect("fixture permissions should be restorable");
     fs::remove_dir_all(directory).expect("test directory should be removable");
+}
+
+#[test]
+fn decodes_local_mcp_file_root_uris_without_accepting_other_schemes() {
+    #[cfg(not(windows))]
+    {
+        assert_eq!(
+            path_from_file_uri("file:///tmp/workspace%20with%20spaces/%CF%80"),
+            Some(PathBuf::from("/tmp/workspace with spaces/π"))
+        );
+        assert_eq!(
+            path_from_file_uri("file://localhost/tmp/project"),
+            Some(PathBuf::from("/tmp/project"))
+        );
+        assert_eq!(
+            path_from_file_uri("FILE://LOCALHOST/tmp/project"),
+            Some(PathBuf::from("/tmp/project"))
+        );
+        assert_eq!(path_from_file_uri("file://remote-host/share"), None);
+    }
+
+    assert_eq!(path_from_file_uri("https://example.com/project"), None);
+    assert_eq!(path_from_file_uri("file:///tmp/broken%2"), None);
+    assert_eq!(path_from_file_uri("file:///tmp/broken%GG"), None);
 }

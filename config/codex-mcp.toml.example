@@ -3,5 +3,4 @@
 [mcp_servers.symbolpeek]
 command = "sh"
 args = ["/ABSOLUTE/PATH/TO/symbolpeek/scripts/run-release.sh"]
-cwd = "/ABSOLUTE/PATH/TO/symbolpeek"
 startup_timeout_ms = 20_000

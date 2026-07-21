@@ -294,7 +294,7 @@ pub struct SymbolContextResult {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SymbolRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
@@ -304,7 +304,7 @@ pub struct SymbolRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PagedSymbolRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
@@ -318,7 +318,7 @@ pub struct PagedSymbolRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct LocationRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(description = "1-based source line containing the usage")]
@@ -330,7 +330,7 @@ pub struct LocationRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SearchSymbolsRequest {
     #[schemars(
-        description = "Exact existing workspace directory path, absolute or relative to the configured workspace root or process working directory."
+        description = "Exact existing workspace directory path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback."
     )]
     pub path: String,
     #[schemars(description = "Case-insensitive symbol name or substring")]
@@ -366,7 +366,7 @@ impl CallDirection {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CallHierarchyRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     pub symbol: String,
@@ -388,7 +388,7 @@ impl CallHierarchyRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DiagnosticsRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(description = "Optional symbol to scope diagnostics to")]
@@ -404,7 +404,7 @@ pub struct DiagnosticsRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DocumentOutlineRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(description = "Maximum total outline nodes; defaults to 200 and is capped at 1000")]
@@ -414,7 +414,7 @@ pub struct DocumentOutlineRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ListSymbolsRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path, absolute or relative to the configured workspace root or process working directory. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
     )]
     pub path: String,
     #[schemars(

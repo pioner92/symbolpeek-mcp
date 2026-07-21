@@ -4,9 +4,13 @@ Full request/response reference for every SymbolPeek MCP tool. For a high-level
 overview of what each tool answers, see the capability tables in the
 [README](README.md#capabilities-at-a-glance).
 
-Absolute file paths are safest when used from an external MCP client. Relative
-paths are resolved against the MCP process working directory, or against
-`SYMBOLPEEK_WORKSPACE_ROOT` when that optional override is explicitly set.
+Absolute file paths are canonical and safest when used from an external MCP
+client. Relative paths first use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then
+filesystem roots supplied by a compatible MCP client. With multiple roots,
+SymbolPeek accepts a relative path only when exactly one root contains it.
+Direct binary launches can fall back to the process working directory; the
+global release wrapper disables that fallback to avoid treating the SymbolPeek
+installation directory as the analyzed project.
 File-based tools require the exact existing `.ts`, `.tsx`, `.js`, or `.jsx`
 source-file path. Their `path` parameter is not a TypeScript module specifier:
 module aliases, directory imports, implicit extensions, and implicit index files
