@@ -5,4 +5,5 @@ pub mod language;
 pub mod mcp;
 pub mod server;
 pub mod statistics;
+pub mod trace;
 pub mod types;

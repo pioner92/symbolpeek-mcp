@@ -630,6 +630,19 @@ impl SymbolPeekServer {
     instructions = "Retrieve minimal AST-backed context from TypeScript and JavaScript source files."
 )]
 impl ServerHandler for SymbolPeekServer {
+    /// Replaces the `#[tool_handler]`-generated body so each call can be timed.
+    /// The macro only injects `call_tool` when the impl block does not define
+    /// one, so this stays in sync by simply existing.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, McpError> {
+        let _trace = crate::trace::RequestTrace::start(request.name.as_ref());
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        Self::tool_router().call(tcc).await
+    }
+
     async fn on_roots_list_changed(
         &self,
         _context: rmcp::service::NotificationContext<RoleServer>,
@@ -687,8 +700,8 @@ fn print_lifetime_statistics(snapshot: crate::statistics::StatisticsSnapshot, us
     );
     println!();
     print_metric(
-        "Estimated tokens:",
-        &format_compact(snapshot.estimated_token_savings),
+        "Tokens saved:",
+        &format!("~{}", format_compact(snapshot.estimated_token_savings)),
         use_color,
         LABEL_WIDTH,
     );

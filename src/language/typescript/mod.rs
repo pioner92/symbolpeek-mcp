@@ -27,6 +27,8 @@ use crate::{
     },
 };
 
+pub mod worker_pool;
+
 const WORKER_SCRIPT: &str = include_str!("worker.js");
 const DEFAULT_MAX_RESULTS: usize = 200;
 const MAX_RESULTS: usize = 1000;
@@ -159,7 +161,13 @@ struct WorkerRequest {
 
 #[derive(Debug, Deserialize)]
 struct WorkerResponse {
+    /// Present only when a served request failed; the long-lived worker reports
+    /// failures in-band instead of exiting.
+    #[serde(default)]
+    error: Option<WorkerFailure>,
+    #[serde(default)]
     symbols: Vec<WorkerSymbol>,
+    #[serde(default)]
     dependencies: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     references: Vec<WorkerLocation>,
@@ -185,6 +193,11 @@ struct WorkerResponse {
     diagnostics: Vec<WorkerDiagnostic>,
     #[serde(default)]
     search_symbols: Vec<WorkerSearchSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkerFailure {
+    message: String,
 }
 
 fn default_symbol_found() -> bool {
@@ -338,6 +351,43 @@ struct WorkerSearchSymbol {
 }
 
 fn run_worker(request: &WorkerRequest, path: &Path) -> Result<WorkerResponse, SymbolPeekError> {
+    let started = std::time::Instant::now();
+    let result = if worker_pool::enabled() {
+        run_worker_persistent(request, path)
+    } else {
+        run_worker_impl(request, path)
+    };
+    crate::trace::worker(&request.operation, started.elapsed().as_millis(), None);
+    result
+}
+
+fn run_worker_persistent(
+    request: &WorkerRequest,
+    path: &Path,
+) -> Result<WorkerResponse, SymbolPeekError> {
+    let payload = serde_json::to_vec(request).map_err(|error| SymbolPeekError::Parse {
+        path: path.to_path_buf(),
+        message: format!("could not encode TypeScript worker request: {error}"),
+    })?;
+    let line = worker_pool::request(WORKER_SCRIPT, &runtime_root(), &payload, path)?;
+    let response: WorkerResponse =
+        serde_json::from_str(&line).map_err(|error| SymbolPeekError::Parse {
+            path: path.to_path_buf(),
+            message: format!("invalid TypeScript worker response: {error}"),
+        })?;
+    if let Some(failure) = response.error {
+        return Err(SymbolPeekError::Parse {
+            path: path.to_path_buf(),
+            message: failure.message,
+        });
+    }
+    Ok(response)
+}
+
+fn run_worker_impl(
+    request: &WorkerRequest,
+    path: &Path,
+) -> Result<WorkerResponse, SymbolPeekError> {
     let node = std::env::var_os("SYMBOLPEEK_NODE").unwrap_or_else(|| "node".into());
     let mut child = Command::new(node)
         .arg("--input-type=commonjs")

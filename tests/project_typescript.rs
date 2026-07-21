@@ -11,6 +11,7 @@ use std::{
 use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
+    types::DiagnosticsRequest,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -27,6 +28,28 @@ fn temp_project_dir() -> PathBuf {
     ));
     fs::create_dir_all(&dir).expect("create temp project");
     dir
+}
+
+fn source_file(path: PathBuf, source: &str) -> SourceFile {
+    SourceFile {
+        path,
+        source: Arc::from(source.to_owned()),
+        extension: "ts".to_owned(),
+    }
+}
+
+fn diagnostics(file: &SourceFile) -> symbolpeek::types::DiagnosticsResult {
+    TypeScriptAdapter
+        .diagnostics(
+            file,
+            &DiagnosticsRequest {
+                path: file.path.display().to_string(),
+                symbol: None,
+                max_results: None,
+                offset: None,
+            },
+        )
+        .expect("diagnostics should resolve")
 }
 
 /// The worker must prefer the project's own TypeScript over the bundled one.
@@ -68,6 +91,96 @@ fn prefers_the_projects_typescript_over_the_bundled_runtime() {
     assert!(
         result.is_err(),
         "worker should load the project's (shimmed) TypeScript and fail, not the bundled runtime"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn persistent_worker_reconciles_pinned_sources_across_file_switches() {
+    let root = temp_project_dir();
+    let src = root.join("src");
+    fs::create_dir_all(&src).expect("create source directory");
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true,"noEmit":true},"files":["src/a.ts","src/b.ts"]}"#,
+    )
+    .expect("write tsconfig");
+
+    let a_path = src.join("a.ts");
+    let b_path = src.join("b.ts");
+    let invalid_a = "export const value: string = 1;\n";
+    let valid_a = "export const value: string = \"ok\";\n";
+    let valid_b = "export const other: number = 2;\n";
+    fs::write(&a_path, invalid_a).expect("write a.ts");
+    fs::write(&b_path, valid_b).expect("write b.ts");
+
+    assert!(!diagnostics(&source_file(a_path.clone(), invalid_a))
+        .diagnostics
+        .is_empty());
+    assert!(diagnostics(&source_file(b_path.clone(), valid_b))
+        .diagnostics
+        .is_empty());
+
+    // Request text is authoritative while a file is pinned, even if it differs
+    // from disk. Switching away must restore the disk snapshot without leaking
+    // the request-only text into a later request.
+    assert!(diagnostics(&source_file(a_path.clone(), valid_a))
+        .diagnostics
+        .is_empty());
+    assert!(diagnostics(&source_file(b_path.clone(), valid_b))
+        .diagnostics
+        .is_empty());
+    assert!(!diagnostics(&source_file(a_path.clone(), invalid_a))
+        .diagnostics
+        .is_empty());
+
+    // A real disk update must invalidate the cached TypeScript snapshot.
+    fs::write(&a_path, valid_a).expect("update a.ts");
+    assert!(diagnostics(&source_file(b_path.clone(), valid_b))
+        .diagnostics
+        .is_empty());
+    assert!(diagnostics(&source_file(a_path.clone(), valid_a))
+        .diagnostics
+        .is_empty());
+
+    // Removing a previously pinned root must not poison the long-lived worker.
+    fs::remove_file(&a_path).expect("remove a.ts");
+    assert!(diagnostics(&source_file(b_path, valid_b))
+        .diagnostics
+        .is_empty());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn files_outside_tsconfig_keep_the_import_closure_fallback() {
+    let root = temp_project_dir();
+    let src = root.join("src");
+    let outside = root.join("outside");
+    fs::create_dir_all(&src).expect("create source directory");
+    fs::create_dir_all(&outside).expect("create outside directory");
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true,"noEmit":true,"module":"NodeNext","moduleResolution":"NodeNext"},"files":["src/root.ts"]}"#,
+    )
+    .expect("write tsconfig");
+    fs::write(src.join("root.ts"), "export const root = 1;\n").expect("write root.ts");
+    fs::write(
+        outside.join("shared.ts"),
+        "export interface Shared { id: string }\n",
+    )
+    .expect("write shared.ts");
+    let entry_source =
+        "import type { Shared } from \"./shared\";\nexport const value: Shared = { id: \"ok\" };\n";
+    let entry_path = outside.join("entry.ts");
+    fs::write(&entry_path, entry_source).expect("write entry.ts");
+
+    let result = diagnostics(&source_file(entry_path, entry_source));
+    assert!(
+        result.diagnostics.is_empty(),
+        "an excluded entry file should still resolve its excluded dependency: {:?}",
+        result.diagnostics
     );
 
     let _ = fs::remove_dir_all(&root);

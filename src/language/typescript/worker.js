@@ -1,8 +1,34 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const request = JSON.parse(fs.readFileSync(0, "utf8"));
-const ts = loadTypeScript();
+// Per-request state. These are reassigned by `prepare` before every request so
+// one long-lived process can serve many requests while the helpers below keep
+// referring to plain identifiers.
+let request;
+let ts;
+let isWorkspaceOperation;
+let workspaceRoot;
+let currentFileName;
+let scriptKind;
+let sourceFile;
+let definitions;
+let definitionByName;
+// Re-exports (`export ... from '...'`) have no local binding, so they live
+// outside `definitions`/`definitionByName` to keep name resolution clean. They
+// are merged into the emitted symbol list so barrel files aren't reported empty.
+let reexports;
+
+/// Reported to the caller instead of exiting, so a served request can fail
+/// without taking the whole worker down. `code` matches the historical
+/// one-shot exit codes.
+class WorkerError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const typeScriptByRoot = new Map();
 
 // Prefer the project's own TypeScript so parsing and resolution match the
 // version the project actually compiles with (newer syntax, version-specific
@@ -13,55 +39,66 @@ function loadTypeScript() {
   const base =
     request.workspace_root ||
     (request.path ? path.dirname(path.resolve(request.path)) : process.cwd());
+  const cached = typeScriptByRoot.get(base);
+  if (cached) return cached;
+  let loaded;
   try {
-    return require(require.resolve("typescript", { paths: [base] }));
+    loaded = require(require.resolve("typescript", { paths: [base] }));
   } catch {
-    return require("typescript");
+    loaded = require("typescript");
   }
-}
-const isWorkspaceOperation = request.operation === "search_symbols";
-const workspaceRoot = path.resolve(
-  request.workspace_root || (isWorkspaceOperation ? request.path : path.dirname(request.path)),
-);
-const currentFileName = isWorkspaceOperation
-  ? path.join(workspaceRoot, "__symbolpeek_workspace__.ts")
-  : path.resolve(request.path);
-const scriptKind = {
-  ts: ts.ScriptKind.TS,
-  tsx: ts.ScriptKind.TSX,
-  js: ts.ScriptKind.JS,
-  jsx: ts.ScriptKind.JSX,
-}[request.extension];
-
-if (!isWorkspaceOperation && scriptKind === undefined) {
-  process.stderr.write(`unsupported extension: ${request.extension}`);
-  process.exit(2);
+  typeScriptByRoot.set(base, loaded);
+  return loaded;
 }
 
-const sourceFile = isWorkspaceOperation
-  ? undefined
-  : ts.createSourceFile(
-    currentFileName,
-    request.source,
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind,
+function prepare(nextRequest) {
+  request = nextRequest;
+  ts = loadTypeScript();
+  isWorkspaceOperation = request.operation === "search_symbols";
+  workspaceRoot = path.resolve(
+    request.workspace_root || (isWorkspaceOperation ? request.path : path.dirname(request.path)),
   );
+  currentFileName = isWorkspaceOperation
+    ? path.join(workspaceRoot, "__symbolpeek_workspace__.ts")
+    : path.resolve(request.path);
+  scriptKind = {
+    ts: ts.ScriptKind.TS,
+    tsx: ts.ScriptKind.TSX,
+    js: ts.ScriptKind.JS,
+    jsx: ts.ScriptKind.JSX,
+  }[request.extension];
 
-if (sourceFile && sourceFile.parseDiagnostics.length > 0 && request.operation !== "get_diagnostics") {
-  const message = sourceFile.parseDiagnostics
-    .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
-    .join("; ");
-  process.stderr.write(message);
-  process.exit(3);
+  if (!isWorkspaceOperation && scriptKind === undefined) {
+    throw new WorkerError(2, `unsupported extension: ${request.extension}`);
+  }
+
+  sourceFile = isWorkspaceOperation
+    ? undefined
+    : ts.createSourceFile(
+      currentFileName,
+      request.source,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind,
+    );
+
+  if (sourceFile && sourceFile.parseDiagnostics.length > 0 && request.operation !== "get_diagnostics") {
+    throw new WorkerError(
+      3,
+      sourceFile.parseDiagnostics
+        .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, " "))
+        .join("; "),
+    );
+  }
+
+  definitions = [];
+  definitionByName = new Map();
+  reexports = [];
+  projectSourceFile = undefined;
+  declarationRangeCache = null;
+
+  if (sourceFile) visitChildren(sourceFile, [], true);
 }
-
-const definitions = [];
-const definitionByName = new Map();
-// Re-exports (`export ... from '...'`) have no local binding, so they live
-// outside `definitions`/`definitionByName` to keep name resolution clean. They
-// are merged into the emitted symbol list so barrel files aren't reported empty.
-const reexports = [];
 
 function byteOffset(utf16Offset) {
   return Buffer.byteLength(request.source.slice(0, utf16Offset), "utf8");
@@ -333,8 +370,6 @@ function visit(node, scope, topLevel, parent) {
   visitChildren(node, scope, topLevel);
 }
 
-if (sourceFile) visitChildren(sourceFile, [], true);
-
 function definitionForReference(name, scope) {
   for (let length = scope.length; length >= 0; length -= 1) {
     const qualified = [...scope.slice(0, length), name].join(".");
@@ -380,12 +415,24 @@ function propertyAccessName(node) {
   return left ? `${left}.${node.name.text}` : undefined;
 }
 
+// Rebuilding this per definition made `dependenciesFor` quadratic in the
+// number of definitions; the set is identical for every call within a request.
+let declarationRangeCache = null;
+function declarationRangesFor() {
+  if (declarationRangeCache === null) {
+    declarationRangeCache = new Set(
+      definitions.map((item) => `${item.name_start}:${item.name_end}`),
+    );
+  }
+  return declarationRangeCache;
+}
+
 function dependenciesFor(definition) {
   const dependencies = new Set();
   const bindings = bindingsIn(definition.node);
   const targetParts = definition.name.split(".");
   const targetSimpleName = targetParts[targetParts.length - 1];
-  const declarationRanges = new Set(definitions.map((item) => `${item.name_start}:${item.name_end}`));
+  const declarationRanges = declarationRangesFor();
 
   function recordIdentifier(identifier) {
     const name = identifier.text;
@@ -432,7 +479,102 @@ function isSupportedSource(fileName) {
     && !fileName.split(path.sep).includes("node_modules");
 }
 
+// One built program per workspace root, reused across requests. Rebuilding it
+// dominated request latency (~4.5s of a ~5s request on a 5k-file project), and
+// nothing in a program is request-specific once file versions are tracked.
+const projectCache = new Map();
+
+/// Returns the cached project for the current workspace, refreshed against the
+/// filesystem, or builds one. Freshness is preserved by an mtime sweep over the
+/// project's own sources (~10ms for 5k files) rather than by discarding the
+/// program.
 function projectLanguageService() {
+  const cached = projectCache.get(workspaceRoot);
+  if (cached && cached.ts === ts && !configChanged(cached)) {
+    refreshProject(cached);
+    return { service: cached.service, sourceFileFor: cached.sourceFileFor };
+  }
+  const project = createProject();
+  projectCache.set(workspaceRoot, project);
+  return { service: project.service, sourceFileFor: project.sourceFileFor };
+}
+
+/// Compiler options and the project's root file set both come from
+/// `tsconfig.json`, so a change to it invalidates the whole program rather than
+/// individual files.
+function configChanged(project) {
+  if (!project.configPath) return false;
+  let mtime;
+  try {
+    mtime = fs.statSync(project.configPath).mtimeMs;
+  } catch {
+    return true;
+  }
+  return mtime !== project.configMtime;
+}
+
+/// Files under `node_modules` are treated as immutable for the life of the
+/// worker: they dominate the program (11k of 11.2k files here) and installing
+/// packages mid-session is not a case worth paying an mtime sweep for.
+function isMutableSource(fileName) {
+  return !fileName.split(path.sep).includes("node_modules");
+}
+
+function safeMtime(fileName) {
+  try {
+    return fs.statSync(fileName).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+function refreshProject(project) {
+  let invalidated = false;
+  for (const [fileName, previous] of project.mtimes) {
+    const current = safeMtime(fileName);
+    if (current === previous) continue;
+
+    if (current === undefined) {
+      invalidated = project.sourceTexts.delete(fileName) || invalidated;
+      invalidated = project.sourceFileCache.delete(fileName) || invalidated;
+      project.mtimes.delete(fileName);
+    } else {
+      project.mtimes.set(fileName, current);
+      const diskSource = ts.sys.readFile(fileName);
+      // A timestamp-only change must not force TypeScript to rebuild an
+      // otherwise identical source file.
+      if (diskSource === project.sourceTexts.get(fileName)) continue;
+      invalidated = true;
+      if (diskSource === undefined) project.sourceTexts.delete(fileName);
+      else project.sourceTexts.set(fileName, diskSource);
+      project.sourceFileCache.delete(fileName);
+    }
+    project.bumpVersion(fileName);
+  }
+
+  // A changed file may have gained or lost imports, so every memoized closure
+  // is suspect. Recomputing one is cheap: parsed sources stay cached.
+  if (invalidated) project.closureCache.clear();
+
+  if (!isWorkspaceOperation) {
+    // Whatever the previous request pinned goes back to being disk-backed, so
+    // reconcile it with disk. An unchanged file keeps its snapshot, parsed AST,
+    // import closure, and TypeScript version across A -> B -> A switches.
+    const previous = project.pinnedFile();
+    if (previous && previous !== currentFileName) {
+      project.unpinFile(previous);
+    }
+    project.pinFile(currentFileName);
+
+    // The request carries the authoritative text for the file under
+    // inspection, which may differ from disk, so it overrides the snapshot.
+    project.setPinnedSource(currentFileName, request.source);
+  }
+
+  project.select(currentFileName);
+}
+
+function createProject() {
   const defaultOptions = {
     allowJs: true,
     checkJs: false,
@@ -464,34 +606,113 @@ function projectLanguageService() {
   }
 
   const sourceTexts = new Map();
-  if (!isWorkspaceOperation) sourceTexts.set(currentFileName, request.source);
-  const scriptFileNames = new Set(rootNames.map((fileName) => path.resolve(fileName)));
-  if (!isWorkspaceOperation) scriptFileNames.add(currentFileName);
+  // Declared before the import-closure walk below, which parses through
+  // `sourceFileFor` and would otherwise hit the temporal dead zone.
+  const sourceFileCache = new Map();
+  const mtimes = new Map();
+  const versions = new Map();
+  const closureCache = new Map();
+  let workspaceFallback;
+  // The single file whose text comes from the request rather than from disk.
+  let pinnedFile;
+  if (!isWorkspaceOperation) {
+    sourceTexts.set(currentFileName, request.source);
+    pinnedFile = currentFileName;
+  }
+  const rootFileNames = new Set(rootNames.map((fileName) => path.resolve(fileName)));
+  // Rebuilt per request by `select`; never accumulated.
+  let selected = new Set();
+
+  function bumpVersion(fileName) {
+    versions.set(fileName, String((Number(versions.get(fileName)) || 1) + 1));
+  }
+
+  function invalidateFile(fileName) {
+    sourceFileCache.delete(fileName);
+    // A changed file may have gained or lost imports and can occur in more than
+    // one entry file's closure, so invalidating only its own key is unsafe.
+    closureCache.clear();
+    bumpVersion(fileName);
+  }
+
+  function pinFile(fileName) {
+    const normalized = path.resolve(fileName);
+    pinnedFile = normalized;
+    // While pinned, request.source is authoritative and may intentionally
+    // differ from disk; the mtime sweep must not replace it.
+    mtimes.delete(normalized);
+  }
+
+  function setPinnedSource(fileName, source) {
+    const normalized = path.resolve(fileName);
+    if (sourceTexts.get(normalized) === source) return;
+    sourceTexts.set(normalized, source);
+    invalidateFile(normalized);
+  }
+
+  function unpinFile(fileName) {
+    const normalized = path.resolve(fileName);
+    if (pinnedFile === normalized) pinnedFile = undefined;
+
+    const diskSource = ts.sys.readFile(normalized);
+    const mtime = safeMtime(normalized);
+    if (diskSource === undefined) {
+      const hadSource = sourceTexts.delete(normalized);
+      const hadParsedSource = sourceFileCache.delete(normalized);
+      mtimes.delete(normalized);
+      if (hadSource || hadParsedSource) {
+        closureCache.clear();
+        bumpVersion(normalized);
+      }
+      return;
+    }
+
+    if (isMutableSource(normalized) && mtime !== undefined) {
+      mtimes.set(normalized, mtime);
+    }
+    if (sourceTexts.get(normalized) === diskSource) return;
+
+    sourceTexts.set(normalized, diskSource);
+    invalidateFile(normalized);
+  }
+
+  function trackMtime(fileName) {
+    if (!isMutableSource(fileName) || mtimes.has(fileName)) return;
+    // The pinned file is served from the request payload, so its disk mtime must
+    // not be recorded: that would make a later sweep believe it is unchanged.
+    if (fileName === pinnedFile) return;
+    try {
+      mtimes.set(fileName, fs.statSync(fileName).mtimeMs);
+    } catch {
+      // Missing files are simply never tracked.
+    }
+  }
 
   function sourceTextFor(fileName) {
     const normalized = path.resolve(fileName);
     if (sourceTexts.has(normalized)) return sourceTexts.get(normalized);
     const source = ts.sys.readFile(normalized);
-    if (source !== undefined) sourceTexts.set(normalized, source);
+    if (source !== undefined) {
+      sourceTexts.set(normalized, source);
+      trackMtime(normalized);
+    }
     return source;
   }
 
-  function addImportedFiles(fileName, visited) {
+  // `visited` records every file reached, including ones rejected below;
+  // without it, imports into node_modules are re-resolved on every path that
+  // reaches them, which is exponential on a real dependency graph.
+  function collectImports(fileName, collected, visited) {
     const normalized = path.resolve(fileName);
     if (visited.has(normalized)) return;
     visited.add(normalized);
     if (!isSupportedSource(normalized)) return;
     const source = sourceTextFor(normalized);
     if (source === undefined) return;
-    scriptFileNames.add(normalized);
+    collected.add(normalized);
     const importedModules = [];
-    const importedFile = ts.createSourceFile(
-      normalized,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKindForFile(normalized),
-    );
+    const importedFile = sourceFileFor(normalized);
+    if (!importedFile) return;
     function visitImports(node) {
       if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
         importedModules.push(node.moduleSpecifier.text);
@@ -515,26 +736,52 @@ function projectLanguageService() {
         compilerOptions,
         ts.sys,
       ).resolvedModule;
-      if (resolved?.resolvedFileName) addImportedFiles(resolved.resolvedFileName, visited);
-    }
-  }
-
-  if (isWorkspaceOperation) {
-    if (scriptFileNames.size === 0) {
-      for (const fileName of ts.sys.readDirectory(
-        workspaceRoot,
-        [".ts", ".tsx", ".js", ".jsx"],
-        undefined,
-        undefined,
-      )) {
-        if (isSupportedSource(fileName)) scriptFileNames.add(path.resolve(fileName));
+      if (resolved?.resolvedFileName) {
+        collectImports(resolved.resolvedFileName, collected, visited);
       }
     }
-  } else {
-    addImportedFiles(currentFileName, new Set());
   }
 
-  const sourceFileCache = new Map();
+  /// The import closure of one entry file, memoized. Walking it re-parses every
+  /// file reached (~800ms here), and the result only changes when a file
+  /// changes, which clears the whole memo.
+  function closureFor(fileName) {
+    const cached = closureCache.get(fileName);
+    if (cached) return cached;
+    const collected = new Set();
+    collectImports(fileName, collected, new Set());
+    closureCache.set(fileName, collected);
+    return collected;
+  }
+
+  /// Files that belong to the program on top of the fixed tsconfig roots.
+  /// Recomputed for every request so the program is exactly what a one-shot
+  /// worker would have built for this file — never an accumulation of whatever
+  /// earlier requests happened to touch.
+  function selectFor(fileName) {
+    if (isWorkspaceOperation) {
+      if (rootFileNames.size > 0) return new Set();
+      if (!workspaceFallback) {
+        workspaceFallback = new Set();
+        for (const found of ts.sys.readDirectory(
+          workspaceRoot,
+          [".ts", ".tsx", ".js", ".jsx"],
+          undefined,
+          undefined,
+        )) {
+          if (isSupportedSource(found)) workspaceFallback.add(path.resolve(found));
+        }
+      }
+      return workspaceFallback;
+    }
+    const normalized = path.resolve(fileName);
+    // A tsconfig root is already handed to the Language Service. TypeScript
+    // follows its imports itself, so manually walking the same graph only to
+    // filter every reached file out below is redundant and expensive.
+    if (rootFileNames.has(normalized)) return new Set();
+    return closureFor(normalized);
+  }
+
   function sourceFileFor(fileName) {
     const normalized = path.resolve(fileName);
     if (sourceFileCache.has(normalized)) return sourceFileCache.get(normalized);
@@ -551,25 +798,54 @@ function projectLanguageService() {
     return parsed;
   }
 
+  /// Narrows the selection to files the tsconfig roots do not already cover.
+  /// For a normal project file the closure is entirely inside the roots, so
+  /// this is empty and `getScriptFileNames` returns an identical list request
+  /// after request — which is what lets TypeScript keep the built program
+  /// instead of rebuilding it.
+  function applySelection(fileName) {
+    const wanted = selectFor(fileName);
+    const extras = new Set();
+    for (const name of wanted) {
+      if (!rootFileNames.has(name)) extras.add(name);
+    }
+    selected = extras;
+  }
+
+  applySelection(currentFileName);
+
   const host = {
     fileExists: ts.sys.fileExists,
     getCompilationSettings: () => compilerOptions,
     getCurrentDirectory: () => workspaceRoot,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    getScriptFileNames: () => [...scriptFileNames],
+    getScriptFileNames: () => [...rootFileNames, ...selected],
     getScriptKind: scriptKindForFile,
     getScriptSnapshot: (fileName) => {
       const source = sourceTextFor(fileName);
       return source === undefined ? undefined : ts.ScriptSnapshot.fromString(source);
     },
-    getScriptVersion: () => "1",
+    getScriptVersion: (fileName) => versions.get(path.resolve(fileName)) ?? "1",
     readDirectory: ts.sys.readDirectory,
     readFile: ts.sys.readFile,
     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
   };
   return {
+    ts,
     service: ts.createLanguageService(host, ts.createDocumentRegistry()),
     sourceFileFor,
+    sourceTexts,
+    sourceFileCache,
+    mtimes,
+    closureCache,
+    bumpVersion,
+    configPath,
+    configMtime: configPath ? safeMtime(configPath) : undefined,
+    select: applySelection,
+    pinnedFile: () => pinnedFile,
+    pinFile,
+    setPinnedSource,
+    unpinFile,
   };
 }
 
@@ -1443,9 +1719,58 @@ function collectCallerReferences(service, symbol, fileName, position) {
   return combined;
 }
 
-const output = {
-  symbols: [...definitions.map(({ node, ...definition }) => definition), ...reexports],
-  dependencies: Object.fromEntries(definitions.map((definition) => [definition.name, dependenciesFor(definition)])),
-};
-if (request.operation !== "parse") Object.assign(output, navigationOutput());
-process.stdout.write(JSON.stringify(output));
+function handle(nextRequest) {
+  prepare(nextRequest);
+  const output = {
+    symbols: [...definitions.map(({ node, ...definition }) => definition), ...reexports],
+    dependencies: Object.fromEntries(
+      definitions.map((definition) => [definition.name, dependenciesFor(definition)]),
+    ),
+  };
+  if (request.operation !== "parse") Object.assign(output, navigationOutput());
+  return output;
+}
+
+// Long-lived mode: newline-delimited JSON in, newline-delimited JSON out. The
+// caller keeps the process alive so built programs are reused; a failed request
+// answers with an `error` object instead of exiting, so one bad path does not
+// discard the warm state every other request depends on.
+function serve() {
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      if (!line.trim()) continue;
+      let response;
+      try {
+        response = handle(JSON.parse(line));
+      } catch (error) {
+        response = {
+          error: {
+            code: error instanceof WorkerError ? error.code : 1,
+            message: error && error.message ? error.message : String(error),
+          },
+        };
+      }
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    }
+  });
+  process.stdin.on("end", () => process.exit(0));
+}
+
+// Selected by environment rather than argv: the worker is delivered to Node via
+// `-e`, which consumes flags before the script ever sees them.
+if (process.env.SYMBOLPEEK_WORKER_SERVE === "1") {
+  serve();
+} else {
+  try {
+    process.stdout.write(JSON.stringify(handle(JSON.parse(fs.readFileSync(0, "utf8")))));
+  } catch (error) {
+    process.stderr.write(error && error.message ? error.message : String(error));
+    process.exit(error instanceof WorkerError ? error.code : 1);
+  }
+}

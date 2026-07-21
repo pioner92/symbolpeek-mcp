@@ -26,7 +26,8 @@ fn symbolpeek_stats_prints_lifetime_dashboard() {
     assert!(stdout.contains("SymbolPeek"));
     assert!(stdout.contains("SymbolPeek Lifetime Statistics"));
     assert!(!stdout.contains("Current Session"));
-    assert!(stdout.contains("Estimated tokens:"));
+    assert!(stdout.contains("Tokens saved:"));
+    assert!(stdout.contains("~0"));
     assert!(stdout.contains("Average reduction:"));
     assert!(stdout.contains("Efficiency meter:"));
     assert!(stdout.contains("Files avoided:"));
