@@ -88,23 +88,45 @@ impl SymbolPeekServer {
         }
     }
 
-    async fn parse_file(
+    /// Loads and parses the file, then runs `operation` against it — all on a
+    /// blocking thread.
+    ///
+    /// Parsing reaches the Node worker, which blocks on a pipe for as long as
+    /// TypeScript needs to build the project's program. Doing that on a runtime
+    /// worker thread parks it: Tokio cannot reclaim a thread already inside a
+    /// task, so once the number of concurrent tool calls reaches the worker
+    /// count the runtime has nothing left to poll and the whole transport
+    /// stalls until a call returns.
+    async fn with_parsed<T, F>(
         &self,
         path: &str,
         peer: &Peer<RoleServer>,
-    ) -> Result<
-        (filesystem::SourceFile, Box<dyn crate::language::ParsedFile>),
-        crate::errors::SymbolPeekError,
-    > {
+        operation: F,
+    ) -> Result<(filesystem::SourceFile, T), crate::errors::SymbolPeekError>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                &dyn crate::language::ParsedFile,
+                &filesystem::SourceFile,
+            ) -> Result<T, crate::errors::SymbolPeekError>
+            + Send
+            + 'static,
+    {
         let path = self.resolve_request_path(path, peer).await?;
-        let file = self.source_loader.load(&path.to_string_lossy())?;
-        let adapter = self.registry.adapter_for(&file.path).ok_or_else(|| {
-            crate::errors::SymbolPeekError::UnsupportedExtension {
-                path: file.path.clone(),
-            }
-        })?;
-        let parsed = adapter.parse(&file)?;
-        Ok((file, parsed))
+        let source_loader = std::sync::Arc::clone(&self.source_loader);
+        let registry = std::sync::Arc::clone(&self.registry);
+        blocking(move || {
+            let file = source_loader.load(&path.to_string_lossy())?;
+            let adapter = registry.adapter_for(&file.path).ok_or_else(|| {
+                crate::errors::SymbolPeekError::UnsupportedExtension {
+                    path: file.path.clone(),
+                }
+            })?;
+            let parsed = adapter.parse(&file)?;
+            let value = operation(parsed.as_ref(), &file)?;
+            Ok((file, value))
+        })
+        .await
     }
 
     async fn resolve_request_path(
@@ -271,6 +293,24 @@ fn collect_files(
     }
 }
 
+/// Runs blocking provider work off the runtime's worker threads.
+///
+/// A panic inside the closure surfaces as an error instead of poisoning the
+/// server, which matters because the worker is shared process-wide.
+async fn blocking<T, F>(operation: F) -> Result<T, crate::errors::SymbolPeekError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, crate::errors::SymbolPeekError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(error) => Err(crate::errors::SymbolPeekError::Parse {
+            path: PathBuf::new(),
+            message: format!("request task failed: {error}"),
+        }),
+    }
+}
+
 impl Default for SymbolPeekServer {
     fn default() -> Self {
         Self::new()
@@ -290,12 +330,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let symbol = request.symbol.clone();
+        let (file, result): (_, ReadSymbolResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.read_symbol(file, &symbol)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ReadSymbolResult = parsed
-            .read_symbol(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
@@ -312,12 +352,13 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let (max_results, offset) = (request.max_results, request.offset);
+        let (file, result): (_, ListSymbolsResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                Ok(parsed.list_symbols(file, max_results, offset))
+            })
             .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ListSymbolsResult =
-            parsed.list_symbols(&file, request.max_results, request.offset);
         let compact = mcp::compact_list_symbols(&result);
         self.record_request(Some(&file), &compact);
         Ok(mcp::json_result(&compact))
@@ -334,12 +375,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let symbol = request.symbol.clone();
+        let (file, result): (_, DependencyResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.find_dependencies(file, &symbol)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: DependencyResult = parsed
-            .find_dependencies(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
@@ -356,12 +397,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let paged = request.clone();
+        let (file, result): (_, ReferencesResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.find_references(file, &paged)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ReferencesResult = parsed
-            .find_references(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let compact = mcp::compact_references(&result);
         self.record_request(Some(&file), &compact);
@@ -379,12 +420,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let paged = request.clone();
+        let (file, result): (_, CallersResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.find_callers(file, &paged)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: CallersResult = parsed
-            .find_callers(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let compact = mcp::compact_callers(&result);
         self.record_request(Some(&file), &compact);
@@ -402,12 +443,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let (line, column) = (request.line, request.column);
+        let (file, result): (_, DefinitionResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.go_to_definition(file, line, column)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: DefinitionResult = parsed
-            .go_to_definition(&file, request.line, request.column)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
@@ -424,12 +465,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let symbol = request.symbol.clone();
+        let (file, result): (_, SymbolContextResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.read_context(file, &symbol)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: SymbolContextResult = parsed
-            .read_context(&file, &request.symbol)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
@@ -450,18 +491,19 @@ impl SymbolPeekServer {
         if !root.is_dir() {
             return Err(crate::errors::SymbolPeekError::FileNotFound { path: root }.into_mcp());
         }
-        let adapter = self
-            .registry
-            .adapter_for_workspace(&root)
-            .ok_or_else(|| crate::errors::SymbolPeekError::UnsupportedOperation {
-                operation: "search_symbols".to_owned(),
-            })
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
+        let registry = std::sync::Arc::clone(&self.registry);
         let mut normalized = request;
         normalized.path = root.to_string_lossy().into_owned();
-        let result: SearchSymbolsResult = adapter
-            .search_symbols(&normalized)
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
+        let result: SearchSymbolsResult = blocking(move || {
+            let adapter = registry.adapter_for_workspace(&root).ok_or_else(|| {
+                crate::errors::SymbolPeekError::UnsupportedOperation {
+                    operation: "search_symbols".to_owned(),
+                }
+            })?;
+            adapter.search_symbols(&normalized)
+        })
+        .await
+        .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let compact = mcp::compact_search_symbols(&result);
         self.record_request(None, &compact);
         Ok(mcp::json_result(&compact))
@@ -478,12 +520,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let paged = request.clone();
+        let (file, result): (_, ImplementationsResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.find_implementations(file, &paged)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: ImplementationsResult = parsed
-            .find_implementations(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let compact = mcp::compact_implementations(&result);
         self.record_request(Some(&file), &compact);
@@ -501,12 +543,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let location = request.clone();
+        let (file, result): (_, TypeInfoResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.get_type(file, &location)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: TypeInfoResult = parsed
-            .get_type(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
@@ -523,12 +565,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let max_results = request.max_results;
+        let (file, result): (_, DocumentOutlineResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.get_document_outline(file, max_results)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: DocumentOutlineResult = parsed
-            .get_document_outline(&file, request.max_results)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         let compact = mcp::compact_document_outline(&result);
@@ -546,12 +588,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let paged = request.clone();
+        let (file, result): (_, CalleesResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.find_callees(file, &paged)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: CalleesResult = parsed
-            .find_callees(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         let compact = mcp::compact_callees(&result);
@@ -571,20 +613,20 @@ impl SymbolPeekServer {
             .resolve_request_path(&request.path, &peer)
             .await
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let file = self
-            .source_loader
-            .load(&path.to_string_lossy())
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let adapter = self
-            .registry
-            .adapter_for(&file.path)
-            .ok_or_else(|| crate::errors::SymbolPeekError::UnsupportedExtension {
-                path: file.path.clone(),
-            })
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: DiagnosticsResult = adapter
-            .diagnostics(&file, &request)
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
+        let source_loader = std::sync::Arc::clone(&self.source_loader);
+        let registry = std::sync::Arc::clone(&self.registry);
+        let (file, result): (_, DiagnosticsResult) = blocking(move || {
+            let file = source_loader.load(&path.to_string_lossy())?;
+            let adapter = registry.adapter_for(&file.path).ok_or_else(|| {
+                crate::errors::SymbolPeekError::UnsupportedExtension {
+                    path: file.path.clone(),
+                }
+            })?;
+            let result = adapter.diagnostics(&file, &request)?;
+            Ok((file, result))
+        })
+        .await
+        .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         Ok(mcp::json_result(&result))
     }
@@ -600,12 +642,12 @@ impl SymbolPeekServer {
         if !filesystem::is_supported(Path::new(&request.path)) {
             return Ok(mcp::unsupported_result());
         }
-        let (file, parsed) = self
-            .parse_file(&request.path, &peer)
+        let hierarchy = request.clone();
+        let (file, result): (_, CallHierarchyResult) = self
+            .with_parsed(&request.path, &peer, move |parsed, file| {
+                parsed.get_call_hierarchy(file, &hierarchy)
+            })
             .await
-            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
-        let result: CallHierarchyResult = parsed
-            .get_call_hierarchy(&file, &request)
             .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         self.record_request(Some(&file), &result);
         let compact = mcp::compact_call_hierarchy(&result);
