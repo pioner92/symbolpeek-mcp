@@ -38,6 +38,10 @@ struct ClientRootsState {
 }
 
 impl SymbolPeekServer {
+    fn supports_file(&self, path: &str) -> bool {
+        self.registry.adapter_for(Path::new(path)).is_some()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::with_dependencies(
@@ -320,14 +324,14 @@ impl Default for SymbolPeekServer {
 #[tool_router]
 impl SymbolPeekServer {
     #[tool(
-        description = "Read the exact source code and metadata for one TypeScript or JavaScript symbol."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Exact source + metadata for one symbol."
     )]
     async fn read_symbol(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let symbol = request.symbol.clone();
@@ -342,14 +346,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "List bounded top-level symbols in one TypeScript or JavaScript file. Returns compact tuple rows; the fields array defines each position. Supports offset pagination via next_offset; every page refers to the same top-level file."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Top-level symbols; rows=fields; offset/next_offset; one file/page."
     )]
     async fn list_symbols(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<ListSymbolsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let (max_results, offset) = (request.max_results, request.offset);
@@ -365,14 +369,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find direct local symbol dependencies of a TypeScript or JavaScript symbol."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Direct same-file dependencies."
     )]
     async fn find_dependencies(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let symbol = request.symbol.clone();
@@ -387,14 +391,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find all project references to a TypeScript or JavaScript symbol, including its definition. Returns compact refs tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
+        description = "[TS/JS only: .ts .tsx .js .jsx] Project refs incl. definition; refs rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_references(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let paged = request.clone();
@@ -410,14 +414,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find project call sites and enclosing callers for a TypeScript or JavaScript symbol. Returns compact callers tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
+        description = "[TS/JS only: .ts .tsx .js .jsx] Call sites + enclosing callers; callers rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_callers(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let paged = request.clone();
@@ -433,14 +437,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Resolve a TypeScript or JavaScript usage location to its definition through project imports."
+        description = "[TS/JS only: .ts .tsx .js .jsx] Definition for a line/column usage; project imports resolved."
     )]
     async fn go_to_definition(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<LocationRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let (line, column) = (request.line, request.column);
@@ -455,14 +459,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Read a symbol with its direct local helper functions, types, and constants from the same file."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Symbol + direct same-file helpers, types, constants."
     )]
     async fn read_symbol_context(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<SymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let symbol = request.symbol.clone();
@@ -477,7 +481,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Search symbols across a TypeScript or JavaScript workspace without reading every file. Returns stable, offset-paginated compact symbols tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Workspace declarations; stable symbols rows=fields; base/files and file_idx are page-local; offset/next_offset."
     )]
     async fn search_symbols(
         &self,
@@ -494,30 +498,23 @@ impl SymbolPeekServer {
         let registry = std::sync::Arc::clone(&self.registry);
         let mut normalized = request;
         normalized.path = root.to_string_lossy().into_owned();
-        let result: SearchSymbolsResult = blocking(move || {
-            let adapter = registry.adapter_for_workspace(&root).ok_or_else(|| {
-                crate::errors::SymbolPeekError::UnsupportedOperation {
-                    operation: "search_symbols".to_owned(),
-                }
-            })?;
-            adapter.search_symbols(&normalized)
-        })
-        .await
-        .map_err(crate::errors::SymbolPeekError::into_mcp)?;
+        let result: SearchSymbolsResult = blocking(move || registry.search_symbols(&normalized))
+            .await
+            .map_err(crate::errors::SymbolPeekError::into_mcp)?;
         let compact = mcp::compact_search_symbols(&result);
         self.record_request(None, &compact);
         Ok(mcp::json_result(&compact))
     }
 
     #[tool(
-        description = "Find TypeScript or JavaScript implementations of an interface, class, or abstract contract. Returns compact impls tuple rows; the fields array defines each position. Pagination uses page-local path tables: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Implementations; Rust=explicit impl syntax; impls rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_implementations(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let paged = request.clone();
@@ -532,15 +529,13 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&compact))
     }
 
-    #[tool(
-        description = "Return TypeScript or JavaScript hover information and the resolved type at a source location."
-    )]
+    #[tool(description = "[TS/JS only: .ts .tsx .js .jsx] Resolved hover/type at line/column.")]
     async fn get_type(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<LocationRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let location = request.clone();
@@ -555,14 +550,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Return a nested AST-backed outline of declarations, classes, methods, and functions in one file. Returns recursive fixed-arity compact tuple rows; fields defines every position at every nesting level, including children."
+        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Nested declarations; recursive rows follow fields at every level."
     )]
     async fn get_document_outline(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<DocumentOutlineRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let max_results = request.max_results;
@@ -578,14 +573,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Find direct statically named calls made by a TypeScript or JavaScript symbol. Returns compact callees tuple rows described by fields and nested resolved-definition tuples described by definition_fields. Statically named calls with no known definition are retained with definition: null; known standard-library/external calls and dynamic anonymous targets are excluded. Pagination uses one page-local path table for call sites and nested definitions: resolve base + files[file_idx] before combining pages because file_idx values are not stable across pages."
+        description = "[TS/JS only: .ts .tsx .js .jsx] Direct named calls; rows=fields, definitions=definition_fields; unresolved definition:null; excludes stdlib/external/dynamic anonymous; paths and file_idx are page-local."
     )]
     async fn find_callees(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<PagedSymbolRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let paged = request.clone();
@@ -600,13 +595,15 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&compact))
     }
 
-    #[tool(description = "Return TypeScript compiler diagnostics for a file or for one symbol.")]
+    #[tool(
+        description = "[TS/JS only: .ts .tsx .js .jsx] Compiler diagnostics for file or symbol."
+    )]
     async fn get_diagnostics(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let path = self
@@ -632,14 +629,14 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Build a bounded TypeScript or JavaScript call hierarchy around a symbol. Returns compact node and edge tuple rows; node_fields and edge_fields define their positions, and every edge is [caller_idx, callee_idx]."
+        description = "[TS/JS only: .ts .tsx .js .jsx] Bounded call graph; rows=node_fields/edge_fields; edge=[caller_idx,callee_idx]."
     )]
     async fn get_call_hierarchy(
         &self,
         peer: Peer<RoleServer>,
         Parameters(request): Parameters<CallHierarchyRequest>,
     ) -> Result<rmcp::model::CallToolResult, McpError> {
-        if !filesystem::is_supported(Path::new(&request.path)) {
+        if !self.supports_file(&request.path) {
             return Ok(mcp::unsupported_result());
         }
         let hierarchy = request.clone();
@@ -655,8 +652,13 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "Return current-session and lifetime SymbolPeek context-avoidance statistics."
+        description = "Language/backend/operation matrix; rows=language_fields; levels aligns with operations. Discovery/diagnostics only."
     )]
+    async fn get_capabilities(&self) -> Result<rmcp::model::CallToolResult, McpError> {
+        Ok(mcp::json_result(&self.registry.capabilities()))
+    }
+
+    #[tool(description = "Session + lifetime context-avoidance statistics.")]
     async fn get_statistics(&self) -> Result<rmcp::model::CallToolResult, McpError> {
         Ok(mcp::json_result(&StatisticsReport {
             session: self.statistics.snapshot(),
@@ -669,7 +671,7 @@ impl SymbolPeekServer {
 #[tool_handler(
     name = "symbolpeek",
     version = "0.1.0",
-    instructions = "Retrieve minimal AST-backed context from TypeScript and JavaScript source files."
+    instructions = "Minimal TS/JS/Rust symbol context. Rust is syntax-only; get_capabilities lists support levels."
 )]
 impl ServerHandler for SymbolPeekServer {
     /// Replaces the `#[tool_handler]`-generated body so each call can be timed.

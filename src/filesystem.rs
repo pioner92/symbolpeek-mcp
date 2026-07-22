@@ -19,8 +19,9 @@ pub trait SourceLoader: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error when the extension is unsupported, the path is missing,
-    /// or the file cannot be read as UTF-8.
+    /// Returns an error when the path is missing, lacks an extension, or the
+    /// file cannot be read as UTF-8. Language support is owned by the registry,
+    /// not by source loading.
     fn load(&self, path: &str) -> Result<SourceFile, SymbolPeekError>;
 }
 
@@ -33,13 +34,20 @@ impl SourceLoader for FileSystemSourceLoader {
     }
 }
 
-/// Reads one current source snapshot after validating its extension.
+/// Reads one current source snapshot after validating it against the built-in
+/// language set. Servers with custom registries use `SourceLoader` directly.
 ///
 /// # Errors
 ///
 /// Returns an error when the extension is unsupported, the file is missing, or
 /// the file cannot be read as UTF-8.
 pub fn load_source(path: &str) -> Result<SourceFile, SymbolPeekError> {
+    let requested = Path::new(path);
+    if !is_supported(requested) {
+        return Err(SymbolPeekError::UnsupportedExtension {
+            path: requested.to_path_buf(),
+        });
+    }
     FileSystemSourceLoader.load(path)
 }
 
@@ -123,10 +131,6 @@ fn load_source_impl(path: &str) -> Result<SourceFile, SymbolPeekError> {
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| SymbolPeekError::UnsupportedExtension { path: path.clone() })?;
-
-    if !matches!(extension.as_str(), "ts" | "tsx" | "js" | "jsx") {
-        return Err(SymbolPeekError::UnsupportedExtension { path });
-    }
 
     if !path.exists() {
         return Err(SymbolPeekError::FileNotFound { path });
@@ -252,7 +256,7 @@ pub fn is_supported(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .is_some_and(|extension| matches!(extension.as_str(), "ts" | "tsx" | "js" | "jsx"))
+        .is_some_and(|extension| matches!(extension.as_str(), "ts" | "tsx" | "js" | "jsx" | "rs"))
 }
 
 /// Markers that identify a project root, in no particular order.

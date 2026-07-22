@@ -10,7 +10,8 @@ Ask for the symbol you need—not the entire file.
   <code>.ts</code>&nbsp;&nbsp;
   <code>.tsx</code>&nbsp;&nbsp;
   <code>.js</code>&nbsp;&nbsp;
-  <code>.jsx</code>
+  <code>.jsx</code>&nbsp;&nbsp;
+  <code>.rs</code>
 </p>
 
 <p>
@@ -22,7 +23,10 @@ Ask for the symbol you need—not the entire file.
 
 </div>
 
-SymbolPeek helps AI coding agents understand large TypeScript and JavaScript codebases without reading unnecessary code. Instead of retrieving entire files, it returns only the requested symbols and their semantic relationships using the official TypeScript Compiler API and Language Service. This reduces token usage, minimizes irrelevant context, and gives agents precise information for navigation, analysis, and refactoring.
+SymbolPeek helps AI coding agents understand large TypeScript, JavaScript, and
+Rust codebases without reading unnecessary code. TypeScript and JavaScript use
+the official Compiler API and Language Service; Rust uses embedded Tree-sitter
+for the syntax operations it can answer reliably.
 
 For an agent this means fewer whole files pulled into the context window, and
 fewer round-trips spent locating and verifying symbols by hand.
@@ -77,11 +81,11 @@ re-exports.*
 
 **Where an agent should still use ordinary tools**
 
-- Plain text, comments, config, or non-TS/JS files — `grep` is faster.
+- Plain text, comments, config, or unsupported files — `grep` is faster.
 - Understanding the full control flow inside one function — just read it.
-- Very large monorepos — each call spawns a short-lived worker and rebuilds a
-  TypeScript program (there is no cache), so latency is real; a targeted
-  `grep` can be faster for a single lookup.
+- Very large monorepos — workspace-wide discovery and TypeScript program
+  construction have real latency; a targeted `grep` can be faster for a single
+  lookup.
 
 **What makes the results trustworthy**
 
@@ -95,6 +99,9 @@ re-exports.*
 - Compiler options come from the project `tsconfig.json`. The worker itself
   uses the TypeScript runtime selected by `SYMBOLPEEK_TYPESCRIPT_ROOT`; the
   release wrapper points this at SymbolPeek's locked runtime.
+- Rust source ranges and nesting come from `tree-sitter-rust`; semantic Rust
+  operations are unsupported. Every language result includes compact
+  `analysis: { backend, analysis_level, complete }` trust metadata.
 
 ## Capabilities at a glance
 
@@ -138,20 +145,22 @@ bounded without offset pagination. Outline nodes use recursive tuple rows declar
 by `fields`; call hierarchy nodes and edges use tuple rows declared by
 `node_fields` and `edge_fields`.
 
-### Statistics
+### Discovery and statistics
 
 | Tool | What it answers |
 | --- | --- |
 | `get_statistics` | “How much source context has SymbolPeek avoided?” |
+| `get_capabilities` | “Which operations and analysis levels does each language support?” |
 
 ## Supported source
 
-The first release supports only:
+Supported extensions:
 
 - `.ts`
 - `.tsx`
 - `.js`
 - `.jsx`
+- `.rs`
 
 The TypeScript provider detects symbols such as:
 
@@ -167,13 +176,20 @@ Enum members are addressed by qualified name, for example
 `Screens.PUBLISH_ACKNOWLEDGEMENT`. Symbol names are indexed; assigned string
 values remain literals and require text search.
 
-Parsing is performed by the official TypeScript Compiler API. SymbolPeek does
-not use regex, brace counting, tree-sitter, SWC, or a hand-written parser.
+TypeScript and JavaScript parsing is performed by the official TypeScript
+Compiler API. It does not use regex, brace counting, Tree-sitter, SWC, or a
+hand-written parser.
 React component and hook classification follows naming and JSX conventions;
 it is a label applied on top of the compiler-derived syntax tree.
 
-Other languages are intentionally unsupported for now. Rust, C++, Swift, Go,
-and Python can be added later as independent language providers.
+Rust uses embedded Tree-sitter for `read_symbol`, `list_symbols`,
+`search_symbols`, `get_document_outline`, same-file dependencies/context, and
+explicit `impl` discovery. It recognizes functions,
+structs, unions, enums and variants, traits, impl blocks and methods, modules,
+constants, statics, type declarations, and macros. The reusable
+`TreeSitterLanguage` contract keeps parsing, resolution, pagination, workspace
+search, and response formatting shared for future Python, Kotlin, Swift, and
+C++ providers.
 
 ## Quick start
 

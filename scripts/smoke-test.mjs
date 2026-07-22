@@ -109,6 +109,14 @@ function validOutlineRows(rows, fields) {
     && validOutlineRows(row[fields.children], fields));
 }
 
+function requireSemanticAnalysis(content, tool) {
+  if (content?.analysis?.backend !== "ts-compiler-api"
+    || content?.analysis?.analysis_level !== "semantic"
+    || content?.analysis?.complete !== true) {
+    throw new Error(`${tool} did not return semantic analysis metadata`);
+  }
+}
+
 function outlineContains(rows, fields, name) {
   return rows.some((row) => row[fields.name] === name
     || outlineContains(row[fields.children], fields, name));
@@ -139,6 +147,7 @@ try {
     "find_callees",
     "get_diagnostics",
     "get_call_hierarchy",
+    "get_capabilities",
     "get_statistics",
   ];
   for (const name of requiredTools) {
@@ -151,38 +160,48 @@ try {
     "get_document_outline", "find_callees", "get_diagnostics", "get_call_hierarchy",
   ]) {
     const description = toolByName.get(name)?.inputSchema?.properties?.path?.description ?? "";
-    if (!description.includes("Exact existing")
-      || !description.includes("MCP client roots")
-      || !description.includes("implicit index files are not resolved")) {
+    if (!description.startsWith("Exact source file")
+      || !description.includes("MCP-root")
+      || !description.includes("module/dir/index lookup")) {
       throw new Error(`${name} did not publish the exact source-file path contract`);
     }
   }
   const searchPathDescription = toolByName.get("search_symbols")
     ?.inputSchema?.properties?.path?.description ?? "";
-  if (!searchPathDescription.includes("Exact existing workspace directory path")
-    || !searchPathDescription.includes("MCP client roots")
-    || searchPathDescription.includes("implicit index files")) {
+  if (!searchPathDescription.startsWith("Workspace dir")
+    || !searchPathDescription.includes("MCP-root")
+    || searchPathDescription.includes("index resolution")) {
     throw new Error("search_symbols did not publish its workspace-directory path contract");
   }
   for (const name of [
     "search_symbols", "find_references", "find_callers", "find_callees", "find_implementations",
   ]) {
     const description = toolByName.get(name)?.description ?? "";
-    if (!description.includes("page-local path table")
-      || !description.includes("file_idx values are not stable across pages")) {
+    if (!description.includes("file_idx are page-local")) {
       throw new Error(`${name} did not publish the page-local path-table contract`);
     }
   }
-  if (!toolByName.get("find_callees")?.description?.includes("definition: null")
+  if (!toolByName.get("find_callees")?.description?.includes("definition:null")
     || !toolByName.get("find_callees")?.description?.includes("definition_fields")) {
     throw new Error("find_callees did not publish its compact unresolved-target contract");
   }
-  if (!toolByName.get("get_call_hierarchy")?.description?.includes("node_fields and edge_fields")) {
+  if (!toolByName.get("get_call_hierarchy")?.description?.includes("node_fields/edge_fields")) {
     throw new Error("get_call_hierarchy did not publish its tuple schema contract");
   }
   if (!toolByName.get("get_document_outline")?.description
-    ?.includes("recursive fixed-arity compact tuple rows")) {
+    ?.includes("recursive rows follow fields")) {
     throw new Error("get_document_outline did not publish its recursive tuple contract");
+  }
+
+  const capabilities = await request("tools/call", {
+    name: "get_capabilities",
+    arguments: {},
+  });
+  const capabilityContent = capabilities.result.structuredContent;
+  if (capabilities.result.isError
+    || JSON.stringify(capabilityContent?.language_fields) !== JSON.stringify(["extensions", "backend", "levels"])
+    || !Array.isArray(capabilityContent?.languages?.rust)) {
+    throw new Error("get_capabilities did not return the compact language matrix");
   }
 
   const symbols = await request("tools/call", {
@@ -199,7 +218,8 @@ try {
     throw new Error("Smoke fixture did not return sendMessage");
   }
   if (!listed.every((symbol) => Array.isArray(symbol) && symbol.length === 5)
-    || symbolsContent?.truncated !== false) {
+    || symbolsContent?.truncated !== false
+    || symbolsContent?.analysis?.backend !== "ts-compiler-api") {
     throw new Error("list_symbols did not return the compact bounded schema");
   }
 
@@ -211,6 +231,7 @@ try {
     throw new Error("read_symbol_context did not return sendMessage");
   }
   const requestedContext = context.result.structuredContent.requested_symbol;
+  requireSemanticAnalysis(context.result.structuredContent, "read_symbol_context");
   if (requestedContext.file !== undefined || requestedContext.supported !== undefined) {
     throw new Error("read_symbol_context repeated top-level metadata");
   }

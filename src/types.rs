@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,46 @@ pub enum SymbolKind {
     EnumMember,
     Namespace,
     Reexport,
+    Struct,
+    Union,
+    Trait,
+    Module,
+    Impl,
+    Macro,
+    Static,
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct AnalysisMetadata {
+    /// Parser or language service that produced the result.
+    pub backend: String,
+    /// Strongest level of analysis used for this result (`syntax`,
+    /// `semantic`, or `mixed`).
+    pub analysis_level: String,
+    /// Whether the backend completed its analysis without recoverable parse
+    /// errors. Output pagination is reported separately through `truncated`.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityLevel {
+    Syntax,
+    Semantic,
+    Unsupported,
+}
+
+/// Compact language row: `[extensions, backend, levels]`. `levels` is parallel
+/// to `CapabilitiesResult::operations`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct LanguageCapabilities(pub Vec<String>, pub String, pub Vec<CapabilityLevel>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct CapabilitiesResult {
+    pub language_fields: Vec<String>,
+    pub operations: Vec<String>,
+    pub languages: BTreeMap<String, LanguageCapabilities>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -43,6 +82,7 @@ pub struct SymbolInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ReadSymbolResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub symbol: String,
     pub kind: SymbolKind,
     pub file: PathBuf,
@@ -53,6 +93,7 @@ pub struct ReadSymbolResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ListSymbolsResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbols: Vec<SymbolInfo>,
     pub truncated: bool,
@@ -63,6 +104,7 @@ pub struct ListSymbolsResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DependencyResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub dependencies: Vec<String>,
@@ -100,6 +142,7 @@ pub struct CallerLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ReferencesResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub files: Vec<PathBuf>,
@@ -112,6 +155,7 @@ pub struct ReferencesResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallersResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub files: Vec<PathBuf>,
@@ -124,6 +168,7 @@ pub struct CallersResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DefinitionResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub line: usize,
     pub column: usize,
@@ -143,6 +188,7 @@ pub struct SearchSymbol {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SearchSymbolsResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub root: PathBuf,
     pub query: String,
     pub files: Vec<PathBuf>,
@@ -155,6 +201,7 @@ pub struct SearchSymbolsResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ImplementationsResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub files: Vec<PathBuf>,
@@ -167,6 +214,7 @@ pub struct ImplementationsResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct TypeInfoResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub line: usize,
     pub column: usize,
@@ -189,6 +237,7 @@ pub struct CalleeLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CalleesResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub files: Vec<PathBuf>,
@@ -221,6 +270,7 @@ pub struct CallHierarchyEdge {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CallHierarchyResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: String,
     pub depth: usize,
@@ -246,6 +296,7 @@ pub struct DocumentOutlineNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DocumentOutlineResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbols: Vec<DocumentOutlineNode>,
     /// True when the total node budget omitted the rest of the outline.
@@ -265,6 +316,7 @@ pub struct Diagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DiagnosticsResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub symbol: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
@@ -284,6 +336,7 @@ pub struct ContextSymbol {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SymbolContextResult {
     pub supported: bool,
+    pub analysis: AnalysisMetadata,
     pub file: PathBuf,
     pub requested_symbol: ContextSymbol,
     pub helper_functions: Vec<ContextSymbol>,
@@ -294,52 +347,49 @@ pub struct SymbolContextResult {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SymbolRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
+    #[schemars(description = "Symbol; nested: Component.render")]
     pub symbol: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PagedSymbolRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "Symbol name, or a qualified nested name such as Component.render")]
+    #[schemars(description = "Symbol; nested: Component.render")]
     pub symbol: String,
-    #[schemars(description = "Page size; defaults to 200 and is capped at 1000")]
+    #[schemars(description = "Page size: 200 default, 1000 max")]
     pub max_results: Option<usize>,
-    #[schemars(description = "Zero-based result offset; defaults to 0")]
+    #[schemars(description = "0-based; default 0")]
     pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct LocationRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "1-based source line containing the usage")]
+    #[schemars(description = "1-based line")]
     pub line: usize,
-    #[schemars(description = "1-based source column containing the usage")]
+    #[schemars(description = "1-based column")]
     pub column: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SearchSymbolsRequest {
-    #[schemars(
-        description = "Exact existing workspace directory path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback."
-    )]
+    #[schemars(description = "Workspace dir; absolute or workspace/MCP-root/cwd-relative.")]
     pub path: String,
-    #[schemars(description = "Case-insensitive symbol name or substring")]
+    #[schemars(description = "Case-insensitive name substring")]
     pub query: String,
-    #[schemars(description = "Optional symbol kind filter")]
     pub kind: Option<SymbolKind>,
-    #[schemars(description = "Page size; defaults to 200 and is capped at 1000")]
+    #[schemars(description = "Page size: 200 default, 1000 max")]
     pub max_results: Option<usize>,
-    #[schemars(description = "Zero-based result offset; defaults to 0")]
+    #[schemars(description = "0-based; default 0")]
     pub offset: Option<usize>,
 }
 
@@ -366,15 +416,13 @@ impl CallDirection {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CallHierarchyRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
     pub symbol: String,
-    #[schemars(description = "Traversal depth; defaults to 2")]
+    #[schemars(description = "Depth 1-8; default 2")]
     pub depth: Option<usize>,
-    #[schemars(
-        description = "Which edges to traverse: callees, callers, or both; defaults to both"
-    )]
+    #[schemars(description = "callees, callers, or both (default)")]
     pub direction: Option<CallDirection>,
 }
 
@@ -388,39 +436,34 @@ impl CallHierarchyRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DiagnosticsRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "Optional symbol to scope diagnostics to")]
     pub symbol: Option<String>,
-    #[schemars(
-        description = "Maximum number of diagnostics; defaults to 200 and is capped at 1000"
-    )]
+    #[schemars(description = "Page size: 200 default, 1000 max")]
     pub max_results: Option<usize>,
-    #[schemars(description = "Zero-based diagnostic offset; defaults to 0")]
+    #[schemars(description = "0-based; default 0")]
     pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct DocumentOutlineRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "Maximum total outline nodes; defaults to 200 and is capped at 1000")]
+    #[schemars(description = "Node limit: 200 default, 1000 max")]
     pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ListSymbolsRequest {
     #[schemars(
-        description = "Exact existing .ts, .tsx, .js, or .jsx source-file path. Absolute paths are canonical; relative paths use an explicit workspace root, MCP client roots, or an enabled process-working-directory fallback. Module aliases, directory imports, and implicit index files are not resolved."
+        description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(
-        description = "Maximum number of top-level symbols; defaults to 200 and is capped at 1000"
-    )]
+    #[schemars(description = "Page size: 200 default, 1000 max")]
     pub max_results: Option<usize>,
-    #[schemars(description = "Zero-based symbol offset; defaults to 0")]
+    #[schemars(description = "0-based; default 0")]
     pub offset: Option<usize>,
 }

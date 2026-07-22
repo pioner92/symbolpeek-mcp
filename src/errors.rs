@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SymbolPeekError {
     #[error(
-        "unsupported file extension for {path}; supported extensions are .ts, .tsx, .js, and .jsx"
+        "unsupported file extension for {path}; supported extensions are .ts, .tsx, .js, .jsx, and .rs"
     )]
     UnsupportedExtension { path: PathBuf },
 

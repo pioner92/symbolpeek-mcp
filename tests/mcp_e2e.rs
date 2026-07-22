@@ -174,6 +174,12 @@ fn assert_compact_indexed_rows(result: &Value, key: &str, expected_fields: &[&st
     }));
 }
 
+fn assert_ts_semantic_analysis(content: &Value) {
+    assert_eq!(content["analysis"]["backend"], "ts-compiler-api");
+    assert_eq!(content["analysis"]["analysis_level"], "semantic");
+    assert_eq!(content["analysis"]["complete"], true);
+}
+
 fn assert_outline_rows(rows: &Value) {
     let rows = rows
         .as_array()
@@ -299,6 +305,13 @@ fn screen_usage_fixture_path() -> String {
     )
 }
 
+fn rust_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/rust/sample.rs",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 fn assert_exact_path_schema_descriptions(tools: &[Value]) {
     for name in [
         "read_symbol",
@@ -321,10 +334,9 @@ fn assert_exact_path_schema_descriptions(tools: &[Value]) {
             .and_then(|tool| tool.pointer("/inputSchema/properties/path/description"))
             .and_then(Value::as_str)
             .expect("file-based tool should describe its path input");
-        assert!(path_description.contains("Exact existing"));
-        assert!(path_description.contains("MCP client roots"));
-        assert!(path_description.contains("Module aliases"));
-        assert!(path_description.contains("implicit index files are not resolved"));
+        assert!(path_description.starts_with("Exact source file"));
+        assert!(path_description.contains("MCP-root"));
+        assert!(path_description.contains("no module/dir/index lookup"));
     }
     let search_path_description = tools
         .iter()
@@ -332,9 +344,44 @@ fn assert_exact_path_schema_descriptions(tools: &[Value]) {
         .and_then(|tool| tool.pointer("/inputSchema/properties/path/description"))
         .and_then(Value::as_str)
         .expect("search_symbols should describe its workspace path input");
-    assert!(search_path_description.contains("Exact existing workspace directory path"));
-    assert!(search_path_description.contains("MCP client roots"));
-    assert!(!search_path_description.contains("implicit index files"));
+    assert!(search_path_description.starts_with("Workspace dir"));
+    assert!(search_path_description.contains("MCP-root"));
+    assert!(!search_path_description.contains("index resolution"));
+}
+
+fn assert_language_support_markers(tools: &[Value]) {
+    for name in [
+        "read_symbol",
+        "list_symbols",
+        "search_symbols",
+        "get_document_outline",
+        "find_dependencies",
+        "read_symbol_context",
+        "find_implementations",
+    ] {
+        let description = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["description"].as_str())
+            .expect("syntax tool should publish a description");
+        assert!(description.starts_with("[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs]"));
+    }
+    for name in [
+        "find_references",
+        "find_callers",
+        "go_to_definition",
+        "get_type",
+        "find_callees",
+        "get_diagnostics",
+        "get_call_hierarchy",
+    ] {
+        let description = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["description"].as_str())
+            .expect("semantic tool should publish a description");
+        assert!(description.starts_with("[TS/JS only: .ts .tsx .js .jsx]"));
+    }
 }
 
 #[test]
@@ -367,8 +414,10 @@ fn starts_initializes_registers_tools_and_shuts_down() {
     assert!(names.contains(&"find_callees"));
     assert!(names.contains(&"get_diagnostics"));
     assert!(names.contains(&"get_call_hierarchy"));
+    assert!(names.contains(&"get_capabilities"));
     assert!(names.contains(&"get_statistics"));
 
+    assert_language_support_markers(tools);
     assert_exact_path_schema_descriptions(tools);
 
     for name in [
@@ -383,41 +432,40 @@ fn starts_initializes_registers_tools_and_shuts_down() {
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("paginated cross-file tool should publish its description");
-        assert!(description.contains("page-local path table"));
-        assert!(description.contains("file_idx values are not stable across pages"));
+        assert!(description.contains("file_idx are page-local"));
     }
     let list_description = tools
         .iter()
         .find(|tool| tool["name"] == "list_symbols")
         .and_then(|tool| tool["description"].as_str())
         .expect("list_symbols should publish its description");
-    assert!(list_description.contains("every page refers to the same top-level file"));
+    assert!(list_description.contains("one file/page"));
 
     let callee_description = tools
         .iter()
         .find(|tool| tool["name"] == "find_callees")
         .and_then(|tool| tool["description"].as_str())
         .expect("find_callees should publish its description");
-    assert!(callee_description.contains("callees tuple rows described by fields"));
+    assert!(callee_description.contains("rows=fields"));
     assert!(callee_description.contains("definition_fields"));
-    assert!(callee_description.contains("definition: null"));
-    assert!(callee_description.contains("dynamic anonymous targets are excluded"));
+    assert!(callee_description.contains("definition:null"));
+    assert!(callee_description.contains("dynamic anonymous"));
 
     let hierarchy_description = tools
         .iter()
         .find(|tool| tool["name"] == "get_call_hierarchy")
         .and_then(|tool| tool["description"].as_str())
         .expect("get_call_hierarchy should publish its description");
-    assert!(hierarchy_description.contains("node_fields and edge_fields"));
-    assert!(hierarchy_description.contains("[caller_idx, callee_idx]"));
+    assert!(hierarchy_description.contains("node_fields/edge_fields"));
+    assert!(hierarchy_description.contains("[caller_idx,callee_idx]"));
 
     let outline_description = tools
         .iter()
         .find(|tool| tool["name"] == "get_document_outline")
         .and_then(|tool| tool["description"].as_str())
         .expect("get_document_outline should publish its description");
-    assert!(outline_description.contains("recursive fixed-arity compact tuple rows"));
-    assert!(outline_description.contains("every nesting level, including children"));
+    assert!(outline_description.contains("recursive rows follow fields"));
+    assert!(outline_description.contains("every level"));
 
     client.send(&call("get_statistics", 3, &json!({})));
     let empty_statistics = client.receive();
@@ -429,6 +477,127 @@ fn starts_initializes_registers_tools_and_shuts_down() {
         empty_statistics["result"]["structuredContent"]["session"]["files_avoided"],
         0
     );
+
+    client.send(&call("get_capabilities", 4, &json!({})));
+    let capability_response = client.receive();
+    let capabilities = &capability_response["result"]["structuredContent"];
+    assert_eq!(
+        capabilities["language_fields"],
+        json!(["extensions", "backend", "levels"])
+    );
+    assert!(capabilities["languages"]["rust"].is_array());
+    assert_eq!(capabilities["languages"]["rust"][0], json!([".rs"]));
+    assert_eq!(capabilities["languages"]["rust"][1], "tree-sitter");
+
+    client.shutdown();
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn serves_reliable_rust_syntax_tools_and_metadata() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+    let path = rust_fixture_path();
+
+    client.send(&call(
+        "read_symbol",
+        200,
+        &json!({"path": path, "symbol": "Client.send"}),
+    ));
+    let read = client.receive();
+    let read = &read["result"]["structuredContent"];
+    assert_eq!(read["kind"], "method");
+    assert_eq!(read["analysis"]["backend"], "tree-sitter");
+    assert_eq!(read["analysis"]["analysis_level"], "syntax");
+    assert_eq!(read["analysis"]["complete"], true);
+
+    client.send(&call(
+        "list_symbols",
+        201,
+        &json!({"path": rust_fixture_path()}),
+    ));
+    let list = client.receive();
+    let list = &list["result"]["structuredContent"];
+    assert!(list["symbols"].as_array().is_some_and(|symbols| {
+        symbols
+            .iter()
+            .any(|symbol| symbol[0] == "Client" && symbol[1] == "struct")
+    }));
+    assert_eq!(list["analysis"]["backend"], "tree-sitter");
+
+    client.send(&call(
+        "get_document_outline",
+        202,
+        &json!({"path": rust_fixture_path()}),
+    ));
+    let outline = client.receive();
+    let outline = &outline["result"]["structuredContent"];
+    assert!(outline_contains(&outline["symbols"], "send"));
+    assert_eq!(outline["analysis"]["analysis_level"], "syntax");
+
+    client.send(&call(
+        "search_symbols",
+        203,
+        &json!({
+            "path": format!("{}/tests/fixtures/rust", env!("CARGO_MANIFEST_DIR")),
+            "query": "send",
+            "kind": "method"
+        }),
+    ));
+    let search = client.receive();
+    let search = &search["result"]["structuredContent"];
+    assert!(search["symbols"]
+        .as_array()
+        .is_some_and(|symbols| symbols.len() == 3));
+    assert_eq!(search["analysis"]["backend"], "tree-sitter");
+
+    client.send(&call(
+        "find_dependencies",
+        206,
+        &json!({"path": rust_fixture_path(), "symbol": "bounded_size"}),
+    ));
+    let dependencies = client.receive();
+    let dependencies = &dependencies["result"]["structuredContent"];
+    assert_eq!(
+        dependencies["dependencies"],
+        json!(["DEFAULT_LIMIT", "normalized_size"])
+    );
+    assert_eq!(dependencies["analysis"]["backend"], "tree-sitter");
+
+    client.send(&call(
+        "read_symbol_context",
+        207,
+        &json!({"path": rust_fixture_path(), "symbol": "bounded_size"}),
+    ));
+    let context = client.receive();
+    let context = &context["result"]["structuredContent"];
+    assert_eq!(context["helper_functions"][0]["symbol"], "normalized_size");
+    assert_eq!(context["local_constants"][0]["symbol"], "DEFAULT_LIMIT");
+
+    client.send(&call(
+        "find_implementations",
+        208,
+        &json!({"path": rust_fixture_path(), "symbol": "Transport"}),
+    ));
+    let implementations = client.receive();
+    let implementations = &implementations["result"]["structuredContent"];
+    assert_eq!(implementations["analysis"]["backend"], "tree-sitter");
+    assert!(implementations["impls"].as_array().is_some_and(|impls| {
+        impls
+            .iter()
+            .any(|implementation| implementation[1] == "impl Transport for Client")
+    }));
+
+    client.send(&call(
+        "find_references",
+        204,
+        &json!({"path": rust_fixture_path(), "symbol": "Client"}),
+    ));
+    let unsupported = client.receive();
+    assert_eq!(unsupported["error"]["code"], -32602);
+    assert!(unsupported["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("not supported")));
 
     client.shutdown();
 }
@@ -446,6 +615,7 @@ fn handles_cross_file_navigation_requests() {
     ));
     let references = client.receive();
     let references_structured = &references["result"]["structuredContent"];
+    assert_ts_semantic_analysis(references_structured);
     assert!(references_structured["refs"]
         .as_array()
         .is_some_and(|items| items.len() >= 3));
@@ -503,6 +673,7 @@ fn handles_cross_file_navigation_requests() {
     ));
     let callers = client.receive();
     let callers_structured = &callers["result"]["structuredContent"];
+    assert_ts_semantic_analysis(callers_structured);
     assert!(callers_structured["callers"]
         .as_array()
         .is_some_and(|items| { items.iter().any(|item| item[1] == "Dashboard") }));
@@ -525,6 +696,7 @@ fn handles_cross_file_navigation_requests() {
         &json!({"path": navigation_fixture_path(), "line": 5, "column": 20}),
     ));
     let definition = client.receive();
+    assert_ts_semantic_analysis(&definition["result"]["structuredContent"]);
     assert!(
         definition["result"]["structuredContent"]["definition"]["file"]
             .as_str()
@@ -669,6 +841,7 @@ fn handles_ast_intelligence_requests() {
         &json!({"path": navigation_fixture_path(), "line": 5, "column": 20}),
     ));
     let type_info = client.receive();
+    assert_ts_semantic_analysis(&type_info["result"]["structuredContent"]);
     assert!(type_info["result"]["structuredContent"]["display"]
         .as_str()
         .is_some_and(|display| display.contains("useAuth")));
@@ -680,6 +853,7 @@ fn handles_ast_intelligence_requests() {
     ));
     let implementations = client.receive();
     let implementations_structured = &implementations["result"]["structuredContent"];
+    assert_ts_semantic_analysis(implementations_structured);
     assert!(implementations_structured["impls"]
         .as_array()
         .is_some_and(|items| items.len() >= 2));
@@ -732,6 +906,7 @@ fn handles_ast_intelligence_requests() {
     ));
     let callees = client.receive();
     let callees_structured = &callees["result"]["structuredContent"];
+    assert_ts_semantic_analysis(callees_structured);
     assert!(callees_structured["callees"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item[0] == "validateInput")));
@@ -744,6 +919,7 @@ fn handles_ast_intelligence_requests() {
     ));
     let diagnostics = client.receive();
     let diagnostics_structured = &diagnostics["result"]["structuredContent"];
+    assert_ts_semantic_analysis(diagnostics_structured);
     assert!(diagnostics_structured["diagnostics"]
         .as_array()
         .is_some_and(|items| !items.is_empty()));
@@ -760,6 +936,7 @@ fn handles_ast_intelligence_requests() {
     ));
     let hierarchy = client.receive();
     let structured = &hierarchy["result"]["structuredContent"];
+    assert_ts_semantic_analysis(structured);
     assert_eq!(
         structured["node_fields"],
         json!([

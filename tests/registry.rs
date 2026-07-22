@@ -70,9 +70,9 @@ fn rejects_duplicate_and_empty_provider_registrations() {
 }
 
 #[test]
-fn default_registry_owns_only_first_version_extensions() {
+fn default_registry_owns_typescript_javascript_and_rust_extensions() {
     let registry = LanguageRegistry::with_defaults();
-    for extension in ["ts", "tsx", "js", "jsx"] {
+    for extension in ["ts", "tsx", "js", "jsx", "rs"] {
         assert!(registry
             .adapter_for(Path::new(&format!("file.{extension}")))
             .is_some());

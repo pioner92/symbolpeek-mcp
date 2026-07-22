@@ -18,12 +18,12 @@ use crate::{
     filesystem::SourceFile,
     language::{LanguageAdapter, ParsedFile},
     types::{
-        CallHierarchyEdge, CallHierarchyNode, CallHierarchyRequest, CallHierarchyResult,
-        CalleeLocation, CalleesResult, ContextSymbol, DependencyResult, Diagnostic,
-        DiagnosticsRequest, DiagnosticsResult, DocumentOutlineNode, DocumentOutlineResult,
-        ImplementationsResult, IndexedSymbolLocation, LineRange, ListSymbolsResult,
-        LocationRequest, ReadSymbolResult, SearchSymbol, SearchSymbolsRequest, SearchSymbolsResult,
-        SymbolContextResult, SymbolInfo, SymbolKind, TypeInfoResult,
+        AnalysisMetadata, CallHierarchyEdge, CallHierarchyNode, CallHierarchyRequest,
+        CallHierarchyResult, CalleeLocation, CalleesResult, CapabilityLevel, ContextSymbol,
+        DependencyResult, Diagnostic, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineNode,
+        DocumentOutlineResult, ImplementationsResult, IndexedSymbolLocation, LineRange,
+        ListSymbolsResult, LocationRequest, ReadSymbolResult, SearchSymbol, SearchSymbolsRequest,
+        SearchSymbolsResult, SymbolContextResult, SymbolInfo, SymbolKind, TypeInfoResult,
     },
 };
 
@@ -36,12 +36,35 @@ const MAX_RESULTS: usize = 1000;
 pub struct TypeScriptAdapter;
 
 impl LanguageAdapter for TypeScriptAdapter {
+    fn language_id(&self) -> &'static str {
+        "ts_js"
+    }
+
+    fn backend(&self) -> &'static str {
+        "ts-compiler-api"
+    }
+
+    fn capability(&self, operation: &str) -> CapabilityLevel {
+        match operation {
+            "read_symbol" | "list_symbols" | "search_symbols" | "get_document_outline" => {
+                CapabilityLevel::Syntax
+            }
+            _ => CapabilityLevel::Semantic,
+        }
+    }
+
     fn supported_extensions(&self) -> &'static [&'static str] {
         &["ts", "tsx", "js", "jsx"]
     }
 
     fn supports(&self, path: &Path) -> bool {
-        crate::filesystem::is_supported(path)
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| {
+                self.supported_extensions()
+                    .iter()
+                    .any(|supported| supported.eq_ignore_ascii_case(extension))
+            })
     }
 
     fn supports_workspace(&self, path: &Path) -> bool {
@@ -83,6 +106,7 @@ impl LanguageAdapter for TypeScriptAdapter {
         let next_offset = next_offset(Some(offset), symbols.len(), response.truncated);
         Ok(SearchSymbolsResult {
             supported: true,
+            analysis: syntax_analysis(),
             root,
             query: request.query.clone(),
             files: files.into_paths(),
@@ -231,6 +255,7 @@ fn diagnostics_result(
     let next_offset = next_offset(request.offset, diagnostics.len(), response.truncated);
     Ok(DiagnosticsResult {
         supported: true,
+        analysis: semantic_analysis(),
         file: file.path.clone(),
         symbol: request.symbol.clone(),
         diagnostics,
@@ -655,6 +680,7 @@ impl ParsedTypeScriptFile {
             .to_owned();
         ReadSymbolResult {
             supported: true,
+            analysis: syntax_analysis(),
             symbol: definition.name.clone(),
             kind: definition.kind,
             file: file.path.clone(),
@@ -774,6 +800,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let next_offset = truncated.then(|| offset.saturating_add(symbols.len()));
         ListSymbolsResult {
             supported: true,
+            analysis: syntax_analysis(),
             file: file.path.clone(),
             symbols,
             truncated,
@@ -804,6 +831,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         }
         Ok(DocumentOutlineResult {
             supported: true,
+            analysis: syntax_analysis(),
             file: file.path.clone(),
             symbols,
             truncated,
@@ -827,6 +855,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let definition = self.require_definition(file, symbol)?;
         Ok(DependencyResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: symbol.to_owned(),
             dependencies: self.dependencies_for(definition),
@@ -861,6 +890,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         }
         Ok(SymbolContextResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             requested_symbol: Self::context_definition(file, definition),
             helper_functions,
@@ -900,6 +930,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let next_offset = next_offset(request.offset, references.len(), response.truncated);
         Ok(crate::types::ReferencesResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             files: files.into_paths(),
@@ -940,6 +971,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let next_offset = next_offset(request.offset, callers.len(), response.truncated);
         Ok(crate::types::CallersResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             files: files.into_paths(),
@@ -974,6 +1006,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             })?;
         Ok(crate::types::DefinitionResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             line,
             column,
@@ -1012,6 +1045,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let next_offset = next_offset(request.offset, implementations.len(), response.truncated);
         Ok(ImplementationsResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             files: files.into_paths(),
@@ -1045,6 +1079,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             })?;
         Ok(TypeInfoResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             line: request.line,
             column: request.column,
@@ -1086,6 +1121,7 @@ impl ParsedFile for ParsedTypeScriptFile {
         let next_offset = next_offset(request.offset, callees.len(), response.truncated);
         Ok(CalleesResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             files: files.into_paths(),
@@ -1164,6 +1200,7 @@ impl ParsedFile for ParsedTypeScriptFile {
             .unwrap_or_default();
         Ok(CallHierarchyResult {
             supported: true,
+            analysis: semantic_analysis(),
             file: file.path.clone(),
             symbol: request.symbol.clone(),
             depth: request.depth.unwrap_or(2).clamp(1, 8),
@@ -1192,6 +1229,22 @@ impl ParsedFile for ParsedTypeScriptFile {
             None,
         )?;
         diagnostics_result(file, request, response)
+    }
+}
+
+fn syntax_analysis() -> AnalysisMetadata {
+    AnalysisMetadata {
+        backend: "ts-compiler-api".to_owned(),
+        analysis_level: "syntax".to_owned(),
+        complete: true,
+    }
+}
+
+fn semantic_analysis() -> AnalysisMetadata {
+    AnalysisMetadata {
+        backend: "ts-compiler-api".to_owned(),
+        analysis_level: "semantic".to_owned(),
+        complete: true,
     }
 }
 

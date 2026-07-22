@@ -11,12 +11,29 @@ SymbolPeek accepts a relative path only when exactly one root contains it.
 Direct binary launches can fall back to the process working directory; the
 global release wrapper disables that fallback to avoid treating the SymbolPeek
 installation directory as the analyzed project.
-File-based tools require the exact existing `.ts`, `.tsx`, `.js`, or `.jsx`
+File-based tools require the exact existing `.ts`, `.tsx`, `.js`, `.jsx`, or `.rs`
 source-file path. Their `path` parameter is not a TypeScript module specifier:
 module aliases, directory imports, implicit extensions, and implicit index files
 are not resolved. `search_symbols` is the exception: its `path` is an exact
 existing workspace directory. Supported files are parsed from their current
 contents for every request.
+
+In MCP `tools/list`, every language-aware tool description begins with a short
+support marker: `[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs]` or
+`[TS/JS only: .ts .tsx .js .jsx]`.
+
+Rust also supports same-file `find_dependencies` / `read_symbol_context` and
+explicit-syntax `find_implementations` through embedded Tree-sitter. Other
+Rust operations return an explicit unsupported-operation error. Every
+supported language operation returns compact trust metadata:
+
+```json
+"analysis": {"backend":"tree-sitter","analysis_level":"syntax","complete":true}
+```
+
+`complete: false` means Tree-sitter recovered from a syntax error in at least
+one analyzed snapshot. It is independent of output pagination, which uses
+`truncated` and `next_offset`.
 
 ## `read_symbol`
 
@@ -36,6 +53,9 @@ as `EnumName.MemberName`, for example
 For a qualified lookup, a missing child of an existing parent is reported as
 `member 'Child' not found in 'Parent' (parent exists)`, which is distinct from
 an entirely missing parent symbol.
+Rust impl methods use qualified names such as `Client.send`; trait impl methods
+use `<Client as Transport>.send`. Attached doc comments and attributes are
+included in the returned declaration source.
 
 ## `list_symbols`
 
@@ -84,7 +104,7 @@ symbol.
 ```
 
 Imported, unresolved, framework, and other external symbols are excluded from
-the result.
+the result. Rust returns only unambiguous declarations indexed in the same file.
 
 ## `find_references`
 
@@ -177,6 +197,7 @@ It does not recursively include the whole project.
 All returned fragments belong to the top-level `file`, so nested fragments
 contain only `symbol`, `kind`, `lines`, and `source`; they do not repeat
 `supported` or the absolute path.
+Rust context uses the same conservative same-file dependency set.
 
 ## `search_symbols`
 
@@ -195,9 +216,10 @@ files.
 }
 ```
 
-The optional `kind` filter accepts the same semantic kinds returned by the
+The optional `kind` filter accepts the same kinds returned by the
 other tools, such as `function`, `react_component`, `hook`, `class`,
-`interface`, `type`, `enum`, and `enum_member`. Results use compact `symbols`
+`interface`, `type`, `enum`, `enum_member`, `struct`, `trait`, `module`,
+`impl`, `macro`, and `static`. Results use compact `symbols`
 tuples with `fields` equal to
 `["file_idx", "name", "kind", "start_line", "end_line", "start_column", "end_column"]`.
 The integer `file_idx` position indexes `files[]`. The default limit is 200, the
@@ -241,10 +263,14 @@ needed. The integer `file_idx` position indexes `files[]`. Paths use the same
 optional `base` contract as `find_references`. The tool supports optional
 `max_results` and `offset` pagination fields.
 
+For Rust, this reports explicit `impl Type` and `impl Trait for Type` blocks
+under the nearest Cargo workspace/root. Alias, re-export, and blanket-impl
+resolution remains unsupported and requires rust-analyzer.
+
 ## `get_document_outline`
 
-Return a nested declaration tree for the file, including class methods,
-object methods, and nested functions. Unlike `list_symbols`, this preserves
+Return a nested declaration tree for the file, including class/impl methods,
+modules, enum variants, and nested functions. Unlike `list_symbols`, this preserves
 declaration nesting. The file path appears only once at the top level because
 every node belongs to that file. The total node limit defaults to 200, is
 capped at 1000, and sets `truncated: true` when declarations are omitted.
@@ -410,6 +436,28 @@ or JSX render tags.
 Return both session and lifetime context-avoidance statistics. The CLI shows
 lifetime statistics only because it runs as a separate process from the MCP
 server.
+
+## `get_capabilities`
+
+Return supported languages, parser backends, and the analysis level of every
+language-aware operation. This is intended for initial discovery, diagnostics,
+and unknown extensions; clients do not need to call it before every operation.
+
+The response avoids repeated keys. `language_fields` defines each language
+tuple, and every `levels` array is parallel to the shared `operations` array:
+
+The following example is abridged; the real `operations` array contains every
+language-aware tool.
+
+```json
+{
+  "language_fields": ["extensions", "backend", "levels"],
+  "operations": ["read_symbol", "list_symbols", "search_symbols"],
+  "languages": {
+    "rust": [[".rs"], "tree-sitter", ["syntax", "syntax", "syntax"]]
+  }
+}
+```
 
 Unsupported extensions return:
 

@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,13 +11,15 @@ use symbolpeek::{
 };
 
 fn test_directory() -> PathBuf {
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after unix epoch")
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "symbolpeek-filesystem-{}-{nonce}",
-        std::process::id()
+        "symbolpeek-filesystem-{}-{nonce}-{}",
+        std::process::id(),
+        NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&path).expect("test directory should be creatable");
     path
@@ -56,6 +59,7 @@ fn distinguishes_unsupported_and_missing_files() {
         SymbolPeekError::FileNotFound { .. }
     ));
     assert!(!is_supported(&unsupported));
+    assert!(is_supported(&directory.join("lib.rs")));
 
     fs::remove_dir_all(directory).expect("test directory should be removable");
 }

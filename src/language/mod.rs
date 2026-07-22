@@ -1,6 +1,11 @@
+pub mod rust;
+pub mod tree_sitter;
 pub mod typescript;
 
-use std::path::Path;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -8,11 +13,12 @@ use crate::{
     errors::SymbolPeekError,
     filesystem::SourceFile,
     types::{
-        CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult, DefinitionResult,
-        DependencyResult, DiagnosticsRequest, DiagnosticsResult, DocumentOutlineResult,
-        ImplementationsResult, ListSymbolsResult, LocationRequest, PagedSymbolRequest,
-        ReadSymbolResult, ReferencesResult, SearchSymbolsRequest, SearchSymbolsResult,
-        SymbolContextResult, TypeInfoResult,
+        AnalysisMetadata, CallHierarchyRequest, CallHierarchyResult, CalleesResult, CallersResult,
+        CapabilitiesResult, CapabilityLevel, DefinitionResult, DependencyResult,
+        DiagnosticsRequest, DiagnosticsResult, DocumentOutlineResult, ImplementationsResult,
+        LanguageCapabilities, ListSymbolsResult, LocationRequest, PagedSymbolRequest,
+        ReadSymbolResult, ReferencesResult, SearchSymbol, SearchSymbolsRequest,
+        SearchSymbolsResult, SymbolContextResult, TypeInfoResult,
     },
 };
 
@@ -41,9 +47,13 @@ pub trait ParsedFile: Send + Sync {
     /// Implementations return an error when the symbol does not exist.
     fn find_dependencies(
         &self,
-        file: &SourceFile,
-        symbol: &str,
-    ) -> Result<DependencyResult, SymbolPeekError>;
+        _file: &SourceFile,
+        _symbol: &str,
+    ) -> Result<DependencyResult, SymbolPeekError> {
+        Err(SymbolPeekError::UnsupportedOperation {
+            operation: "find_dependencies".to_owned(),
+        })
+    }
     /// Reads minimal direct local context or returns a symbol-not-found error.
     ///
     /// # Errors
@@ -51,9 +61,13 @@ pub trait ParsedFile: Send + Sync {
     /// Implementations return an error when the symbol does not exist.
     fn read_context(
         &self,
-        file: &SourceFile,
-        symbol: &str,
-    ) -> Result<SymbolContextResult, SymbolPeekError>;
+        _file: &SourceFile,
+        _symbol: &str,
+    ) -> Result<SymbolContextResult, SymbolPeekError> {
+        Err(SymbolPeekError::UnsupportedOperation {
+            operation: "read_symbol_context".to_owned(),
+        })
+    }
 
     /// Finds all project references to a symbol.
     ///
@@ -203,6 +217,21 @@ pub trait ParsedFile: Send + Sync {
 
 /// Provider boundary for one language family.
 pub trait LanguageAdapter: Send + Sync {
+    /// Stable language identifier exposed through `get_capabilities`.
+    fn language_id(&self) -> &'static str {
+        "unknown"
+    }
+
+    /// Parser or language service used by this provider.
+    fn backend(&self) -> &'static str {
+        "unknown"
+    }
+
+    /// Analysis strength for one MCP operation.
+    fn capability(&self, _operation: &str) -> CapabilityLevel {
+        CapabilityLevel::Unsupported
+    }
+
     /// Extensions owned by this provider, without leading dots.
     fn supported_extensions(&self) -> &'static [&'static str];
     fn supports(&self, path: &Path) -> bool;
@@ -276,7 +305,10 @@ impl LanguageRegistry {
     #[must_use]
     pub fn with_defaults() -> Self {
         Self {
-            adapters: vec![Box::new(typescript::TypeScriptAdapter)],
+            adapters: vec![
+                Box::new(typescript::TypeScriptAdapter),
+                Box::new(rust::RustAdapter::new()),
+            ],
         }
     }
 
@@ -322,4 +354,223 @@ impl LanguageRegistry {
             .map(Box::as_ref)
             .find(|adapter| adapter.supports_workspace(path))
     }
+
+    #[must_use]
+    pub fn capabilities(&self) -> CapabilitiesResult {
+        let languages = self
+            .adapters
+            .iter()
+            .map(|adapter| {
+                let levels = LANGUAGE_OPERATIONS
+                    .iter()
+                    .map(|operation| adapter.capability(operation))
+                    .collect();
+                (
+                    adapter.language_id().to_owned(),
+                    LanguageCapabilities(
+                        adapter
+                            .supported_extensions()
+                            .iter()
+                            .map(|extension| format!(".{extension}"))
+                            .collect(),
+                        adapter.backend().to_owned(),
+                        levels,
+                    ),
+                )
+            })
+            .collect();
+        CapabilitiesResult {
+            language_fields: ["extensions", "backend", "levels"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            operations: LANGUAGE_OPERATIONS
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            languages,
+        }
+    }
+
+    /// Searches every workspace-capable provider and applies one stable global
+    /// ordering and pagination window to the combined result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any participating provider cannot complete its
+    /// search. Unsupported providers are ignored.
+    pub fn search_symbols(
+        &self,
+        request: &SearchSymbolsRequest,
+    ) -> Result<SearchSymbolsResult, SymbolPeekError> {
+        let mut aggregate = WorkspaceSearch::default();
+        let target = request
+            .offset
+            .unwrap_or_default()
+            .saturating_add(request.max_results.unwrap_or(200).clamp(1, 1000))
+            .saturating_add(1);
+        for adapter in self
+            .adapters
+            .iter()
+            .filter(|adapter| adapter.supports_workspace(Path::new(&request.path)))
+        {
+            aggregate.collect(adapter.as_ref(), request, target)?;
+        }
+        Ok(aggregate.finish(request))
+    }
 }
+
+struct WorkspaceSearch {
+    matches: Vec<(PathBuf, SearchSymbol)>,
+    backends: BTreeSet<String>,
+    levels: BTreeSet<String>,
+    complete: bool,
+    more_results: bool,
+}
+
+impl Default for WorkspaceSearch {
+    fn default() -> Self {
+        Self {
+            matches: Vec::new(),
+            backends: BTreeSet::new(),
+            levels: BTreeSet::new(),
+            complete: true,
+            more_results: false,
+        }
+    }
+}
+
+impl WorkspaceSearch {
+    fn collect(
+        &mut self,
+        adapter: &dyn LanguageAdapter,
+        request: &SearchSymbolsRequest,
+        target: usize,
+    ) -> Result<(), SymbolPeekError> {
+        let mut provider_offset = 0;
+        let mut collected = 0;
+        loop {
+            let provider_request = SearchSymbolsRequest {
+                max_results: Some(target.saturating_sub(collected).clamp(1, 1000)),
+                offset: Some(provider_offset),
+                ..request.clone()
+            };
+            let result = match adapter.search_symbols(&provider_request) {
+                Ok(result) => result,
+                Err(SymbolPeekError::UnsupportedOperation { .. }) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            if !result.symbols.is_empty() {
+                self.backends.insert(result.analysis.backend.clone());
+                self.levels.insert(result.analysis.analysis_level.clone());
+            }
+            self.complete &= result.analysis.complete;
+            collected = collected.saturating_add(result.symbols.len());
+            for symbol in result.symbols {
+                let path =
+                    result
+                        .files
+                        .get(symbol.file_idx)
+                        .ok_or_else(|| SymbolPeekError::Parse {
+                            path: result.root.clone(),
+                            message: "language provider returned an invalid search file index"
+                                .to_owned(),
+                        })?;
+                self.matches.push((path.clone(), symbol));
+            }
+            let Some(next_offset) = result.next_offset else {
+                return Ok(());
+            };
+            if collected >= target {
+                self.more_results = true;
+                return Ok(());
+            }
+            if next_offset <= provider_offset {
+                return Err(SymbolPeekError::Parse {
+                    path: result.root,
+                    message: "language provider returned a non-advancing search offset".to_owned(),
+                });
+            }
+            provider_offset = next_offset;
+        }
+    }
+
+    fn finish(mut self, request: &SearchSymbolsRequest) -> SearchSymbolsResult {
+        self.matches
+            .sort_by(|(left_path, left), (right_path, right)| {
+                left_path
+                    .cmp(right_path)
+                    .then_with(|| left.lines.start.cmp(&right.lines.start))
+                    .then_with(|| left.start_column.cmp(&right.start_column))
+                    .then_with(|| left.name.cmp(&right.name))
+            });
+        let max_results = request.max_results.unwrap_or(200).clamp(1, 1000);
+        let offset = request.offset.unwrap_or_default();
+        let page = self
+            .matches
+            .iter()
+            .skip(offset)
+            .take(max_results)
+            .collect::<Vec<_>>();
+        let mut files = Vec::new();
+        let mut file_indices = BTreeMap::<PathBuf, usize>::new();
+        let mut symbols = Vec::with_capacity(page.len());
+        for (path, symbol) in page {
+            let file_idx = if let Some(index) = file_indices.get(path) {
+                *index
+            } else {
+                let index = files.len();
+                files.push(path.clone());
+                file_indices.insert(path.clone(), index);
+                index
+            };
+            let mut symbol = (*symbol).clone();
+            symbol.file_idx = file_idx;
+            symbols.push(symbol);
+        }
+        let truncated =
+            self.more_results || offset.saturating_add(symbols.len()) < self.matches.len();
+        let next_offset = truncated.then(|| offset.saturating_add(symbols.len()));
+        SearchSymbolsResult {
+            supported: true,
+            analysis: AnalysisMetadata {
+                backend: if self.backends.is_empty() {
+                    "none".to_owned()
+                } else {
+                    self.backends.into_iter().collect::<Vec<_>>().join("+")
+                },
+                analysis_level: if self.levels.is_empty() {
+                    "none".to_owned()
+                } else if self.levels.len() == 1 {
+                    self.levels.into_iter().next().unwrap_or_default()
+                } else {
+                    "mixed".to_owned()
+                },
+                complete: self.complete,
+            },
+            root: PathBuf::from(&request.path),
+            query: request.query.clone(),
+            files,
+            symbols,
+            truncated,
+            next_offset,
+        }
+    }
+}
+
+const LANGUAGE_OPERATIONS: [&str; 14] = [
+    "read_symbol",
+    "list_symbols",
+    "search_symbols",
+    "get_document_outline",
+    "find_dependencies",
+    "read_symbol_context",
+    "find_references",
+    "find_callers",
+    "find_callees",
+    "go_to_definition",
+    "find_implementations",
+    "get_type",
+    "get_diagnostics",
+    "get_call_hierarchy",
+];

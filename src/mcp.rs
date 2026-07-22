@@ -3,8 +3,9 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::types::{
-    CallHierarchyResult, CalleesResult, CallersResult, DocumentOutlineNode, DocumentOutlineResult,
-    ImplementationsResult, ListSymbolsResult, ReferencesResult, SearchSymbolsResult, SymbolKind,
+    AnalysisMetadata, CallHierarchyResult, CalleesResult, CallersResult, DocumentOutlineNode,
+    DocumentOutlineResult, ImplementationsResult, ListSymbolsResult, ReferencesResult,
+    SearchSymbolsResult, SymbolKind,
 };
 
 const REFERENCE_FIELDS: [&str; 6] = [
@@ -168,6 +169,7 @@ impl CompactPathTable {
 #[derive(Serialize)]
 pub(crate) struct CompactReferencesResult<'a> {
     symbol: &'a str,
+    analysis: &'a AnalysisMetadata,
     #[serde(flatten)]
     paths: CompactPathTable,
     fields: &'static [&'static str],
@@ -180,6 +182,7 @@ pub(crate) struct CompactReferencesResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactImplementationsResult<'a> {
     symbol: &'a str,
+    analysis: &'a AnalysisMetadata,
     #[serde(flatten)]
     paths: CompactPathTable,
     fields: &'static [&'static str],
@@ -192,6 +195,7 @@ pub(crate) struct CompactImplementationsResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactCallersResult<'a> {
     symbol: &'a str,
+    analysis: &'a AnalysisMetadata,
     #[serde(flatten)]
     paths: CompactPathTable,
     fields: &'static [&'static str],
@@ -204,6 +208,7 @@ pub(crate) struct CompactCallersResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactCalleesResult<'a> {
     symbol: &'a str,
+    analysis: &'a AnalysisMetadata,
     #[serde(flatten)]
     paths: CompactPathTable,
     fields: &'static [&'static str],
@@ -217,6 +222,7 @@ pub(crate) struct CompactCalleesResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactSearchSymbolsResult<'a> {
     query: &'a str,
+    analysis: &'a AnalysisMetadata,
     #[serde(flatten)]
     paths: CompactPathTable,
     fields: &'static [&'static str],
@@ -229,6 +235,7 @@ pub(crate) struct CompactSearchSymbolsResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactListSymbolsResult<'a> {
     file: &'a std::path::Path,
+    analysis: &'a AnalysisMetadata,
     fields: &'static [&'static str],
     symbols: Vec<ListSymbolRow<'a>>,
     truncated: bool,
@@ -239,6 +246,7 @@ pub(crate) struct CompactListSymbolsResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactDocumentOutlineResult<'a> {
     file: &'a std::path::Path,
+    analysis: &'a AnalysisMetadata,
     fields: &'static [&'static str],
     symbols: Vec<CompactDocumentOutlineNode<'a>>,
     truncated: bool,
@@ -247,6 +255,7 @@ pub(crate) struct CompactDocumentOutlineResult<'a> {
 #[derive(Serialize)]
 pub(crate) struct CompactCallHierarchyResult<'a> {
     symbol: &'a str,
+    analysis: &'a AnalysisMetadata,
     depth: usize,
     root: usize,
     #[serde(flatten)]
@@ -262,6 +271,7 @@ pub(crate) struct CompactCallHierarchyResult<'a> {
 pub(crate) fn compact_references(result: &ReferencesResult) -> CompactReferencesResult<'_> {
     CompactReferencesResult {
         symbol: &result.symbol,
+        analysis: &result.analysis,
         paths: CompactPathTable::from_paths(&result.files),
         fields: &REFERENCE_FIELDS,
         refs: result
@@ -289,6 +299,7 @@ pub(crate) fn compact_implementations(
 ) -> CompactImplementationsResult<'_> {
     CompactImplementationsResult {
         symbol: &result.symbol,
+        analysis: &result.analysis,
         paths: CompactPathTable::from_paths(&result.files),
         fields: &IMPLEMENTATION_FIELDS,
         impls: result
@@ -314,6 +325,7 @@ pub(crate) fn compact_implementations(
 pub(crate) fn compact_callers(result: &CallersResult) -> CompactCallersResult<'_> {
     CompactCallersResult {
         symbol: &result.symbol,
+        analysis: &result.analysis,
         paths: CompactPathTable::from_paths(&result.files),
         fields: &CALLER_FIELDS,
         callers: result
@@ -339,6 +351,7 @@ pub(crate) fn compact_callers(result: &CallersResult) -> CompactCallersResult<'_
 pub(crate) fn compact_callees(result: &CalleesResult) -> CompactCalleesResult<'_> {
     CompactCalleesResult {
         symbol: &result.symbol,
+        analysis: &result.analysis,
         paths: CompactPathTable::from_paths(&result.files),
         fields: &CALLEE_FIELDS,
         definition_fields: &CALLEE_DEFINITION_FIELDS,
@@ -376,6 +389,7 @@ pub(crate) fn compact_search_symbols(
 ) -> CompactSearchSymbolsResult<'_> {
     CompactSearchSymbolsResult {
         query: &result.query,
+        analysis: &result.analysis,
         paths: CompactPathTable::from_paths(&result.files),
         fields: &SEARCH_SYMBOL_FIELDS,
         symbols: result
@@ -402,6 +416,7 @@ pub(crate) fn compact_search_symbols(
 pub(crate) fn compact_list_symbols(result: &ListSymbolsResult) -> CompactListSymbolsResult<'_> {
     CompactListSymbolsResult {
         file: &result.file,
+        analysis: &result.analysis,
         fields: &LIST_SYMBOL_FIELDS,
         symbols: result
             .symbols
@@ -427,6 +442,7 @@ pub(crate) fn compact_document_outline(
 ) -> CompactDocumentOutlineResult<'_> {
     CompactDocumentOutlineResult {
         file: &result.file,
+        analysis: &result.analysis,
         fields: &DOCUMENT_OUTLINE_FIELDS,
         symbols: result
             .symbols
@@ -443,6 +459,7 @@ pub(crate) fn compact_call_hierarchy(
 ) -> CompactCallHierarchyResult<'_> {
     CompactCallHierarchyResult {
         symbol: &result.symbol,
+        analysis: &result.analysis,
         depth: result.depth,
         root: result.root,
         paths: CompactPathTable::from_paths(&result.files),
@@ -491,8 +508,9 @@ mod tests {
         compact_call_hierarchy, compact_callees, compact_document_outline, CompactPathTable,
     };
     use crate::types::{
-        CallHierarchyEdge, CallHierarchyNode, CallHierarchyResult, CalleeLocation, CalleesResult,
-        DocumentOutlineNode, DocumentOutlineResult, IndexedSymbolLocation, LineRange, SymbolKind,
+        AnalysisMetadata, CallHierarchyEdge, CallHierarchyNode, CallHierarchyResult,
+        CalleeLocation, CalleesResult, DocumentOutlineNode, DocumentOutlineResult,
+        IndexedSymbolLocation, LineRange, SymbolKind,
     };
     use std::path::PathBuf;
 
@@ -555,6 +573,11 @@ mod tests {
     fn compacts_nested_document_outlines_to_recoverable_tuple_rows() {
         let result = DocumentOutlineResult {
             supported: true,
+            analysis: AnalysisMetadata {
+                backend: "test".to_owned(),
+                analysis_level: "syntax".to_owned(),
+                complete: true,
+            },
             file: PathBuf::from("/project/src/status.ts"),
             symbols: vec![DocumentOutlineNode {
                 name: "FileDownloadStatus".to_owned(),
@@ -604,6 +627,11 @@ mod tests {
     fn compacts_resolved_and_unresolved_callees_without_redundant_definition_fields() {
         let result = CalleesResult {
             supported: true,
+            analysis: AnalysisMetadata {
+                backend: "test".to_owned(),
+                analysis_level: "semantic".to_owned(),
+                complete: true,
+            },
             file: PathBuf::from("/project/src/caller.ts"),
             symbol: "sendMessage".to_owned(),
             files: vec![
@@ -712,6 +740,11 @@ mod tests {
             .collect();
         let result = CallHierarchyResult {
             supported: true,
+            analysis: AnalysisMetadata {
+                backend: "test".to_owned(),
+                analysis_level: "semantic".to_owned(),
+                complete: true,
+            },
             file: file.clone(),
             symbol: "Caller0".to_owned(),
             depth: 2,
