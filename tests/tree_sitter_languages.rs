@@ -561,7 +561,7 @@ fn new_language_search_is_stable_paged_prefiltered_and_ignores_build_directories
         .iter()
         .find(|symbol| symbol.name == "Service.run")
         .expect("qualified symbol should be found");
-    assert!(qualified.files[service.file_idx] == first);
+    assert_eq!(qualified.files[service.file_idx], first);
     assert!(qualified
         .symbols
         .iter()
