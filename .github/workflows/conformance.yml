@@ -1,0 +1,23 @@
+name: Extended conformance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+jobs:
+  generated-cases:
+    runs-on: ubuntu-latest
+    env:
+      SYMBOLPEEK_CONFORMANCE_CASES: 512
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - run: npm ci
+      - run: cargo test --release --test conformance -- --nocapture

@@ -1,0 +1,2 @@
+# Minimal generated conformance failures are persisted here by proptest.
+cc 28170fc2708df22301339c88fe5cbe4cad1923010f2a1ab236d14f3c8dc7f5df # shrinks to CaseSpec { language: JavaScript, binding: Direct, callback: Arrow, container: Function, formatting: Multiline, operation_property: "xa", callback_name: "onXa", nesting_depth: 1 }

@@ -637,42 +637,39 @@ impl ParsedTypeScriptFile {
     }
 
     fn definition(&self, symbol: &str) -> Option<&Definition> {
-        self.definitions
+        let mut matches = self
+            .definitions
             .iter()
-            .find(|definition| definition.name == symbol)
+            .filter(|definition| definition.name == symbol);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
     }
 
     /// Resolves a user-supplied symbol name to a definition.
     ///
-    /// Tries an exact (qualified) match first. If the name is unqualified and
-    /// has no exact match, it falls back to matching the leaf name across
-    /// nested scopes — the same tree `get_document_outline` exposes — so bare
-    /// names like `play` resolve to `AudioPlayerProvider.play`. When several
-    /// nested symbols share the leaf name the result is ambiguous and the
-    /// qualified candidates are reported instead of a misleading "not found".
+    /// Tries an exact match first, then matches the requested leaf below an
+    /// optional qualified parent. Multiple matches report their full paths.
     fn resolve(&self, symbol: &str) -> Resolution<'_> {
-        if let Some(definition) = self.definition(symbol) {
-            return Resolution::Found(definition);
-        }
-        if !symbol.contains('.') {
-            let mut matches = self
-                .definitions
+        match resolution_from_matches(
+            self.definitions
                 .iter()
-                .filter(|definition| leaf_name(&definition.name) == symbol);
-            if let Some(first) = matches.next() {
-                let rest: Vec<&Definition> = matches.collect();
-                if rest.is_empty() {
-                    return Resolution::Found(first);
-                }
-                let mut candidates: Vec<String> = std::iter::once(first)
-                    .chain(rest)
-                    .map(|definition| definition.name.clone())
-                    .collect();
-                candidates.sort();
-                return Resolution::Ambiguous(candidates);
-            }
+                .filter(|definition| definition.name == symbol),
+        ) {
+            Resolution::NotFound => {}
+            result => return result,
         }
-        Resolution::NotFound
+
+        if let Some((parent, leaf)) = symbol.rsplit_once('.') {
+            let prefix = format!("{parent}.");
+            return resolution_from_matches(self.definitions.iter().filter(|definition| {
+                definition.name.starts_with(&prefix) && leaf_name(&definition.name) == leaf
+            }));
+        }
+        resolution_from_matches(
+            self.definitions
+                .iter()
+                .filter(|definition| leaf_name(&definition.name) == symbol),
+        )
     }
 
     /// Resolves `symbol` or returns an actionable MCP error (ambiguous names
@@ -691,7 +688,11 @@ impl ParsedTypeScriptFile {
             }),
             Resolution::NotFound => {
                 if let Some((parent, member)) = symbol.rsplit_once('.') {
-                    if self.definition(parent).is_some() {
+                    if self
+                        .definitions
+                        .iter()
+                        .any(|definition| definition.name == parent)
+                    {
                         return Err(SymbolPeekError::SymbolMemberNotFound {
                             path: file.path.clone(),
                             parent: parent.to_owned(),
@@ -757,10 +758,57 @@ enum Resolution<'a> {
     NotFound,
 }
 
+fn resolution_from_matches<'a>(
+    mut matches: impl Iterator<Item = &'a Definition>,
+) -> Resolution<'a> {
+    let Some(first) = matches.next() else {
+        return Resolution::NotFound;
+    };
+    let Some(second) = matches.next() else {
+        return Resolution::Found(first);
+    };
+    let mut candidates: Vec<(&str, usize, String)> = std::iter::once(first)
+        .chain(std::iter::once(second))
+        .chain(matches)
+        .map(|definition| {
+            (
+                occurrence_base(&definition.name),
+                definition.start,
+                definition.name.clone(),
+            )
+        })
+        .collect();
+    // `@line:column` suffixes are numeric, so sorting the rendered names would
+    // order 4562 before 544. Order by base name, then by source position.
+    candidates.sort_by(|left, right| left.0.cmp(right.0).then(left.1.cmp(&right.1)));
+    candidates.dedup_by(|left, right| left.2 == right.2);
+    Resolution::Ambiguous(
+        candidates
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// A qualified name without its `@line:column` occurrence selector.
+fn occurrence_base(name: &str) -> &str {
+    let Some((base, occurrence)) = name.rsplit_once('@') else {
+        return name;
+    };
+    if occurrence
+        .split(':')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        base
+    } else {
+        name
+    }
+}
+
 /// The trailing segment of a possibly qualified symbol name
 /// (`AudioPlayerProvider.play` → `play`).
 fn leaf_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, leaf)| leaf)
+    occurrence_base(name.rsplit_once('.').map_or(name, |(_, leaf)| leaf))
 }
 
 fn line_range(source: &str, start: usize, end: usize) -> LineRange {

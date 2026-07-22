@@ -5,8 +5,39 @@ All notable changes to SymbolPeek are documented here. This project follows
 
 ## Unreleased
 
+## [0.4.1] — 2026-07-22
+
+### Fixed
+
+- **Symbols that no name could reach.** When two distinct declarations produced
+  the same qualified name, `read_symbol` answered with an ambiguity error whose
+  only candidate was the name just asked for — a dead end with no way to reach
+  either declaration. Reading `Object`, `Array`, `String`, `Math`, or `JSON`
+  from the bundled `lib.es5.d.ts` failed this way, as did any file combining
+  `interface X` with `declare var X`. Such declarations now receive
+  `@line:column` occurrence selectors, and the ambiguity error lists them in
+  source order.
+- **Callbacks inside destructured calls lost their container.** Only the
+  react-query `mutate` alias produced a qualified container; SWR's `trigger`,
+  Apollo's tuple form, and arbitrary property names collapsed sibling callbacks
+  onto one unreachable name. The container is now selected structurally, so
+  `EventCreation.onCreateEvent.onSuccess` resolves across all of these shapes.
+- `search_symbols` ranges cover the full declaration instead of just the name,
+  and now agree with `read_symbol` and `get_document_outline`.
+- Function-valued object properties report `arrow_function` or
+  `react_component` rather than `object_method`, matching the other tools.
+- `get`/`set` accessor pairs merge into one property; unrelated declarations
+  that happen to share a name no longer merge into one span.
+
 ### Changed
 
+- Large files are dramatically faster: converting UTF-16 positions to byte
+  offsets rescanned the file from the start on every call, which made every
+  operation quadratic in file size. `read_symbol` on a 1.8 MB `.d.ts` went from
+  9.7s to 0.2s.
+- Ambiguity candidates are ordered by source position rather than
+  lexicographically, so `@line:column` selectors no longer sort `4562` before
+  `544`.
 - GitHub Release notes are now composed from the matching `CHANGELOG.md`
   section plus install instructions, instead of the commit-derived
   `--generate-notes` output.
@@ -94,6 +125,7 @@ All notable changes to SymbolPeek are documented here. This project follows
 - Barrel files now emit re-export symbols from `list_symbols`.
 - Nested bare-name reads, bounded call hierarchy, and JSX/memo caller detection.
 
+[0.4.1]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.4.1
 [0.4.0]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.4.0
 [0.3.1]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.3.0

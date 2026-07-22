@@ -322,6 +322,13 @@ fn screen_usage_fixture_path() -> String {
     )
 }
 
+fn mutation_callbacks_fixture_path() -> String {
+    format!(
+        "{}/tests/fixtures/navigation/mutation_callbacks.tsx",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 fn rust_fixture_path() -> String {
     format!(
         "{}/tests/fixtures/rust/sample.rs",
@@ -857,6 +864,45 @@ fn handles_qualified_enum_members() {
     assert!(missing_parent["error"]["message"]
         .as_str()
         .is_some_and(|message| !message.contains("parent exists")));
+
+    client.shutdown();
+}
+
+#[test]
+fn resolves_mutation_callbacks_by_full_container_and_reports_partial_ambiguity() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+    let path = mutation_callbacks_fixture_path();
+
+    for (id, symbol, marker) in [
+        (94, "EventCreation.onCreateEvent.onSuccess", "created"),
+        (95, "EventCreation.onEditEvent.onSuccess", "edited"),
+    ] {
+        client.send(&call(
+            "read_symbol",
+            id,
+            &json!({"path": path, "symbol": symbol}),
+        ));
+        let read = client.receive();
+        let structured = &read["result"]["structuredContent"];
+        assert_eq!(structured["symbol"], symbol);
+        assert!(structured["source"]
+            .as_str()
+            .is_some_and(|source| source.contains(marker)));
+    }
+
+    client.send(&call(
+        "read_symbol",
+        96,
+        &json!({"path": path, "symbol": "EventCreation.onSuccess"}),
+    ));
+    let ambiguous = client.receive();
+    assert_eq!(ambiguous["error"]["code"], -32602);
+    let message = ambiguous["error"]["message"]
+        .as_str()
+        .expect("ambiguity should include an error message");
+    assert!(message.contains("EventCreation.onCreateEvent.onSuccess"));
+    assert!(message.contains("EventCreation.onEditEvent.onSuccess"));
 
     client.shutdown();
 }

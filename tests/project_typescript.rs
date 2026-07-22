@@ -11,7 +11,7 @@ use std::{
 use symbolpeek::{
     filesystem::SourceFile,
     language::{typescript::TypeScriptAdapter, LanguageAdapter},
-    types::DiagnosticsRequest,
+    types::{DiagnosticsRequest, SearchSymbolsRequest},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -149,6 +149,37 @@ fn persistent_worker_reconciles_pinned_sources_across_file_switches() {
     assert!(diagnostics(&source_file(b_path, valid_b))
         .diagnostics
         .is_empty());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn workspace_search_reconciles_a_previously_pinned_request_source() {
+    let root = temp_project_dir();
+    let path = root.join("sample.ts");
+    let disk_source = "export function DiskOnly() { return 1; }\n";
+    let request_source = "export function RequestOnly() { return 2; }\n";
+    fs::write(&path, disk_source).expect("write disk source");
+
+    assert!(diagnostics(&source_file(path.clone(), request_source))
+        .diagnostics
+        .is_empty());
+    let search = TypeScriptAdapter
+        .search_symbols(&SearchSymbolsRequest {
+            path: root.display().to_string(),
+            query: String::new(),
+            kind: None,
+            max_results: Some(20),
+            offset: None,
+        })
+        .expect("workspace search should reconcile the disk source");
+    let names = search
+        .symbols
+        .iter()
+        .map(|symbol| symbol.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"DiskOnly"), "got: {names:?}");
+    assert!(!names.contains(&"RequestOnly"), "got: {names:?}");
 
     let _ = fs::remove_dir_all(&root);
 }

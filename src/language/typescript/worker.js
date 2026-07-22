@@ -13,6 +13,7 @@ let scriptKind;
 let sourceFile;
 let definitions;
 let definitionByName;
+let byteOffsetIndex;
 // Re-exports (`export ... from '...'`) have no local binding, so they live
 // outside `definitions`/`definitionByName` to keep name resolution clean. They
 // are merged into the emitted symbol list so barrel files aren't reported empty.
@@ -96,12 +97,55 @@ function prepare(nextRequest) {
   reexports = [];
   projectSourceFile = undefined;
   declarationRangeCache = null;
+  byteOffsetIndex = null;
 
-  if (sourceFile) visitChildren(sourceFile, [], true);
+  if (sourceFile) {
+    visitChildren(sourceFile, [], true);
+    disambiguateDuplicateDefinitions(definitions, sourceFile);
+    rebuildDefinitionIndex();
+  }
+}
+
+const BYTE_OFFSET_CHUNK = 4096;
+
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code) {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/// Chunk starts and their cumulative UTF-8 byte counts. Measuring a prefix from
+/// zero on every call is O(offset), which turns every span into quadratic work
+/// on large files; chunking bounds each call to one chunk. Chunk starts step
+/// over surrogate pairs so a pair is never measured as two lone surrogates.
+function buildByteOffsetIndex() {
+  const source = request.source;
+  if (Buffer.byteLength(source, "utf8") === source.length) return { ascii: true };
+  const bounds = [0];
+  const prefix = [0];
+  for (let raw = BYTE_OFFSET_CHUNK; raw < source.length; raw += BYTE_OFFSET_CHUNK) {
+    const start = isLowSurrogate(source.charCodeAt(raw)) && isHighSurrogate(source.charCodeAt(raw - 1))
+      ? raw + 1
+      : raw;
+    const previous = bounds[bounds.length - 1];
+    prefix.push(prefix[prefix.length - 1] + Buffer.byteLength(source.slice(previous, start), "utf8"));
+    bounds.push(start);
+  }
+  return { ascii: false, bounds, prefix };
 }
 
 function byteOffset(utf16Offset) {
-  return Buffer.byteLength(request.source.slice(0, utf16Offset), "utf8");
+  if (!byteOffsetIndex) byteOffsetIndex = buildByteOffsetIndex();
+  if (byteOffsetIndex.ascii) return utf16Offset;
+  let chunk = Math.min(
+    Math.floor(utf16Offset / BYTE_OFFSET_CHUNK),
+    byteOffsetIndex.bounds.length - 1,
+  );
+  if (chunk > 0 && byteOffsetIndex.bounds[chunk] > utf16Offset) chunk -= 1;
+  return byteOffsetIndex.prefix[chunk]
+    + Buffer.byteLength(request.source.slice(byteOffsetIndex.bounds[chunk], utf16Offset), "utf8");
 }
 
 function span(node) {
@@ -129,6 +173,42 @@ function declarationNames(node) {
     });
   }
   return [];
+}
+
+function localBindingName(element) {
+  return element && ts.isIdentifier(element.name) ? element.name.text : undefined;
+}
+
+function isLikelyStatusBinding(name) {
+  return /^(is|has|can|should|loading|pending|error|data|status|result)/i.test(name);
+}
+
+function initializerContainerName(declaration, entries) {
+  if (entries.length === 1) return entries[0].name;
+  if (ts.isArrayBindingPattern(declaration.name)) {
+    const first = declaration.name.elements.find((element) => !ts.isOmittedExpression(element));
+    return first && !ts.isOmittedExpression(first) ? localBindingName(first) : undefined;
+  }
+  if (!ts.isObjectBindingPattern(declaration.name)) return undefined;
+
+  const bindings = declaration.name.elements
+    .map((element) => ({
+      local: localBindingName(element),
+      renamed: Boolean(element.propertyName),
+    }))
+    .filter((binding) => binding.local);
+  const handlers = bindings.filter((binding) => /^on[A-Z0-9_]/.test(binding.local));
+  if (handlers.length === 1) return handlers[0].local;
+  const actionAliases = bindings.filter(
+    (binding) => binding.renamed && !isLikelyStatusBinding(binding.local),
+  );
+  if (actionAliases.length === 1) return actionAliases[0].local;
+  return bindings[0]?.local;
+}
+
+function initializerScope(scope, declaration, entries) {
+  const container = initializerContainerName(declaration, entries);
+  return container ? [...scope, container] : scope;
 }
 
 function containsJsx(node) {
@@ -172,16 +252,85 @@ function variableKind(name, initializer, isConst) {
   return { kind: isConst ? "constant" : "variable", category: isConst ? "constant" : "other" };
 }
 
+function overloadKind(node) {
+  if (ts.isFunctionDeclaration(node)) return "function";
+  if (ts.isMethodDeclaration(node)) return "method";
+  return undefined;
+}
+
+function canMergeOverload(existing, node) {
+  const kind = overloadKind(node);
+  return kind !== undefined
+    && overloadKind(existing.node) === kind
+    && (!existing.node.body || !node.body);
+}
+
+function canMergeAccessorPair(existing, node) {
+  return (ts.isGetAccessorDeclaration(existing.node) && ts.isSetAccessorDeclaration(node))
+    || (ts.isSetAccessorDeclaration(existing.node) && ts.isGetAccessorDeclaration(node));
+}
+
+function canMergeDefinition(existing, node) {
+  return canMergeOverload(existing, node) || canMergeAccessorPair(existing, node);
+}
+
+function replaceQualifiedPrefix(value, oldPrefix, newPrefix) {
+  if (value === oldPrefix) return newPrefix;
+  return value.startsWith(`${oldPrefix}.`)
+    ? `${newPrefix}${value.slice(oldPrefix.length)}`
+    : value;
+}
+
+function disambiguateDuplicateDefinitions(items, file) {
+  const groups = new Map();
+  for (const item of items) {
+    const group = groups.get(item.name);
+    if (group) group.push(item);
+    else groups.set(item.name, [item]);
+  }
+
+  for (const [name, duplicates] of groups) {
+    if (duplicates.length < 2) continue;
+    const used = new Map();
+    for (const root of duplicates) {
+      const position = root.name_utf16_start ?? root.node.getStart(file);
+      const location = file.getLineAndCharacterOfPosition(position);
+      const baseSuffix = `${location.line + 1}:${location.character + 1}`;
+      const ordinal = (used.get(baseSuffix) || 0) + 1;
+      used.set(baseSuffix, ordinal);
+      const suffix = ordinal === 1 ? baseSuffix : `${baseSuffix}:${ordinal}`;
+      const qualified = `${name}@${suffix}`;
+      for (const candidate of items) {
+        if (candidate.start < root.start || candidate.end > root.end) continue;
+        candidate.name = replaceQualifiedPrefix(candidate.name, name, qualified);
+        if (candidate.scope) {
+          const scope = replaceQualifiedPrefix(candidate.scope.join("."), name, qualified);
+          candidate.scope = scope ? scope.split(".") : [];
+        }
+      }
+    }
+  }
+}
+
+function rebuildDefinitionIndex() {
+  definitionByName = new Map();
+  for (const definition of definitions) {
+    const existing = definitionByName.get(definition.name);
+    definitionByName.set(definition.name, existing === undefined ? definition : null);
+  }
+}
+
 function addDefinition(name, node, nameNode, kind, category, scope, topLevel) {
   if (!name) return;
   const qualifiedName = [...scope, name].join(".");
   const nodeSpan = span(node);
   const nameSpan = identifierSpan(nameNode || node.name);
+  const hadExisting = definitionByName.has(qualifiedName);
   const existing = definitionByName.get(qualifiedName);
-  if (existing) {
+  if (existing && canMergeDefinition(existing, node)) {
     existing.start = Math.min(existing.start, nodeSpan.start);
     existing.end = Math.max(existing.end, nodeSpan.end);
-    if (ts.isFunctionDeclaration(node) && node.body) existing.node = node;
+    if (canMergeOverload(existing, node) && node.body) existing.node = node;
     return;
   }
   const definition = {
@@ -200,7 +349,7 @@ function addDefinition(name, node, nameNode, kind, category, scope, topLevel) {
     node,
   };
   definitions.push(definition);
-  definitionByName.set(qualifiedName, definition);
+  definitionByName.set(qualifiedName, hadExisting ? null : definition);
 }
 
 function addReexport(name, node, moduleSpecifier, topLevel) {
@@ -259,8 +408,7 @@ function visit(node, scope, topLevel, parent) {
       // destructuring pattern has no single owner, so nesting under each binding
       // would duplicate every inner symbol. Single binding still nests by name.
       if (initializer) {
-        const initializerScope = entries.length === 1 ? [...scope, entries[0].name] : scope;
-        visit(initializer, initializerScope, false, declaration);
+        visit(initializer, initializerScope(scope, declaration, entries), false, declaration);
       }
       if (declaration.type) visit(declaration.type, scope, false, declaration);
     }
@@ -381,7 +529,8 @@ function visit(node, scope, topLevel, parent) {
 function definitionForReference(name, scope) {
   for (let length = scope.length; length >= 0; length -= 1) {
     const qualified = [...scope.slice(0, length), name].join(".");
-    if (definitionByName.has(qualified)) return definitionByName.get(qualified);
+    const definition = definitionByName.get(qualified);
+    if (definition) return definition;
   }
   return undefined;
 }
@@ -512,13 +661,7 @@ function projectLanguageService() {
 /// individual files.
 function configChanged(project) {
   if (!project.configPath) return false;
-  let mtime;
-  try {
-    mtime = fs.statSync(project.configPath).mtimeMs;
-  } catch {
-    return true;
-  }
-  return mtime !== project.configMtime;
+  return safeFileStamp(project.configPath) !== project.configMtime;
 }
 
 /// Files under `node_modules` are treated as immutable for the life of the
@@ -528,9 +671,10 @@ function isMutableSource(fileName) {
   return !fileName.split(path.sep).includes("node_modules");
 }
 
-function safeMtime(fileName) {
+function safeFileStamp(fileName) {
   try {
-    return fs.statSync(fileName).mtimeMs;
+    const stat = fs.statSync(fileName, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.size}`;
   } catch {
     return undefined;
   }
@@ -538,8 +682,12 @@ function safeMtime(fileName) {
 
 function refreshProject(project) {
   let invalidated = false;
+  if (isWorkspaceOperation) {
+    const previous = project.pinnedFile();
+    if (previous) project.unpinFile(previous);
+  }
   for (const [fileName, previous] of project.mtimes) {
-    const current = safeMtime(fileName);
+    const current = safeFileStamp(fileName);
     if (current === previous) continue;
 
     if (current === undefined) {
@@ -663,7 +811,7 @@ function createProject() {
     if (pinnedFile === normalized) pinnedFile = undefined;
 
     const diskSource = ts.sys.readFile(normalized);
-    const mtime = safeMtime(normalized);
+    const mtime = safeFileStamp(normalized);
     if (diskSource === undefined) {
       const hadSource = sourceTexts.delete(normalized);
       const hadParsedSource = sourceFileCache.delete(normalized);
@@ -689,11 +837,8 @@ function createProject() {
     // The pinned file is served from the request payload, so its disk mtime must
     // not be recorded: that would make a later sweep believe it is unchanged.
     if (fileName === pinnedFile) return;
-    try {
-      mtimes.set(fileName, fs.statSync(fileName).mtimeMs);
-    } catch {
-      // Missing files are simply never tracked.
-    }
+    const stamp = safeFileStamp(fileName);
+    if (stamp !== undefined) mtimes.set(fileName, stamp);
   }
 
   function sourceTextFor(fileName) {
@@ -848,7 +993,7 @@ function createProject() {
     closureCache,
     bumpVersion,
     configPath,
-    configMtime: configPath ? safeMtime(configPath) : undefined,
+    configMtime: configPath ? safeFileStamp(configPath) : undefined,
     select: applySelection,
     pinnedFile: () => pinnedFile,
     pinFile,
@@ -993,6 +1138,7 @@ function callerAt(fileName, position) {
 
 function searchDefinitionsInFile(file) {
   const results = [];
+  const resultByName = new Map();
 
   function visitChildrenLocal(node, scope) {
     ts.forEachChild(node, (child) => visit(child, scope, node));
@@ -1000,12 +1146,27 @@ function searchDefinitionsInFile(file) {
 
   function add(name, node, nameNode, kind, scope) {
     if (!name || !nameNode) return;
-    results.push({
-      name: [...scope, name].join("."),
+    const qualifiedName = [...scope, name].join(".");
+    const start = node.getStart(file);
+    const end = node.getEnd();
+    const existing = resultByName.get(qualifiedName);
+    if (existing && canMergeDefinition(existing, node)) {
+      existing.start = Math.min(existing.start, start);
+      existing.end = Math.max(existing.end, end);
+      if (canMergeOverload(existing, node) && node.body) existing.node = node;
+      return;
+    }
+    const result = {
+      name: qualifiedName,
       kind,
-      nameStart: nameNode.getStart(file),
+      start,
+      end,
+      name_utf16_start: nameNode.getStart(file),
+      scope,
       node,
-    });
+    };
+    results.push(result);
+    resultByName.set(qualifiedName, resultByName.has(qualifiedName) ? null : result);
   }
 
   function visit(node, scope, parent) {
@@ -1025,30 +1186,48 @@ function searchDefinitionsInFile(file) {
       const isConst = (node.declarationList.flags & ts.NodeFlags.Const) !== 0;
       for (const declaration of node.declarationList.declarations) {
         const entries = declarationNames(declaration.name);
+        const symbolNode = node.declarationList.declarations.length === 1 ? node : declaration;
         for (const entry of entries) {
           const classification = variableKind(entry.name, declaration.initializer, isConst);
-          add(entry.name, declaration, entry.node, classification.kind, scope);
+          add(entry.name, symbolNode, entry.node, classification.kind, scope);
         }
         // Visit the initializer once per declaration (see the parse walker):
         // a destructuring pattern nests inner symbols in the enclosing scope
         // rather than duplicating them under every binding.
         if (declaration.initializer) {
-          const initializerScope = entries.length === 1 ? [...scope, entries[0].name] : scope;
-          visit(declaration.initializer, initializerScope, declaration);
+          visit(
+            declaration.initializer,
+            initializerScope(scope, declaration, entries),
+            declaration,
+          );
         }
       }
       return;
     }
     if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
       const name = nameOf(node.name);
-      if (name) add(name, node, node.name, "method", scope);
+      const isObjectMethod = parent && ts.isObjectLiteralExpression(parent);
+      if (name) add(name, node, node.name, isObjectMethod ? "object_method" : "method", scope);
       visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    if (ts.isFunctionExpression(node)) {
+      const name = nameOf(node.name);
+      if (name) add(name, node, node.name, classifyFunction(name, false, node), scope);
+      visitChildrenLocal(node, name ? [...scope, name] : scope);
+      return;
+    }
+    if (ts.isArrowFunction(node)) {
+      visitChildrenLocal(node, scope);
       return;
     }
     if (ts.isPropertyAssignment(node) && node.initializer
       && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       const name = nameOf(node.name);
-      if (name) add(name, node, node.name, "object_method", scope);
+      const kind = ts.isArrowFunction(node.initializer)
+        ? (containsJsx(node.initializer) ? "react_component" : "arrow_function")
+        : "object_method";
+      if (name) add(name, node, node.name, kind, scope);
       visit(node.initializer, name ? [...scope, name] : scope, node);
       return;
     }
@@ -1086,6 +1265,7 @@ function searchDefinitionsInFile(file) {
   }
 
   visit(file, [], undefined);
+  disambiguateDuplicateDefinitions(results, file);
   return results;
 }
 
@@ -1105,7 +1285,7 @@ function searchOutput(service) {
     .sort((left, right) => compareText(left.normalized, right.normalized));
   for (const { file, normalized } of files) {
     const definitions = searchDefinitionsInFile(file).sort((left, right) => (
-      compareNumber(left.nameStart, right.nameStart)
+      compareNumber(left.start, right.start)
         || compareText(left.name, right.name)
         || compareText(left.kind, right.kind)
     ));
@@ -1116,9 +1296,8 @@ function searchOutput(service) {
         skipped += 1;
         continue;
       }
-      const start = file.getLineAndCharacterOfPosition(definition.nameStart);
-      const nameEnd = definition.nameStart + definition.name.split(".").pop().length;
-      const end = file.getLineAndCharacterOfPosition(nameEnd);
+      const start = file.getLineAndCharacterOfPosition(definition.start);
+      const end = file.getLineAndCharacterOfPosition(definition.end);
       matches.push({
         name: definition.name,
         kind: definition.kind,

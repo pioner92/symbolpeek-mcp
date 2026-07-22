@@ -179,6 +179,17 @@ Nested declarations use qualified names. TypeScript enum members are available
 as `EnumName.MemberName`, for example `Screens.PUBLISH_ACKNOWLEDGEMENT`; their
 kind is `enum_member`.
 
+Callbacks inside a destructured call use a structurally selected local binding
+as their container, for example `EventCreation.onCreateEvent.onSuccess`. This
+works for object aliases such as `mutate`, `mutateAsync`, and `trigger`, tuple
+bindings, and arbitrary property names. If a shorter qualified name matches
+several descendants, `read_symbol` returns an ambiguity error listing their
+full paths, ordered by source position. Distinct AST nodes that still share one
+full path receive `@line:column` occurrence selectors; the same identity is
+emitted by search, outline, and read tools. A selector names a position rather
+than a declaration, so an edit above it shifts the selector — resolve one from
+a current outline or search result instead of reusing a stored one.
+
 Rust impl methods use qualified names such as `Client.send`; trait impl methods
 use `<Client as Transport>.send`. Attached doc comments and attributes are
 included in the returned declaration source.
@@ -244,7 +255,7 @@ scans only the supplied workspace and returns supported source files.
   "base": "/project/src/language/typescript",
   "files": ["worker.js"],
   "fields": ["file_idx", "name", "kind", "start_line", "end_line", "start_column", "end_column"],
-  "symbols": [[0, "createProject.collectImports", "function", 713, 713, 12, 26]],
+  "symbols": [[0, "createProject.collectImports", "function", 713, 751, 3, 4]],
   "truncated": true,
   "next_offset": 10
 }
@@ -255,7 +266,9 @@ as `function`, `react_component`, `hook`, `class`, `interface`, `type`, `enum`,
 `enum_member`, `struct`, `trait`, `module`, `impl`, `macro`, `static`, and
 `json_property`.
 
-Results have a stable path-and-source-position order for an unchanged workspace.
+Ranges cover the full declaration and match `read_symbol` and
+`get_document_outline`. Results have a stable path-and-source-position order for
+an unchanged workspace.
 When truncated, pass `next_offset` back as `offset` with the same query and
 kind.
 

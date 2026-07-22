@@ -83,6 +83,25 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+`cargo test --all-targets` includes an exhaustive TS/JS cross-tool matrix, a
+property-based generator, semantic-tool checks, a curated real-world corpus,
+and the bundled TypeScript standard library (`npm ci` first — the standard
+library test skips itself when `node_modules` is absent). Generated cases cover
+shapes we thought to model; the standard library covers the ones we did not,
+which is where symbol-identity bugs have actually come from. Generated cases
+vary destructuring style, arbitrary property/callback identifiers, nesting
+depth, formatting, JSX, and real TypeScript syntax.
+Increase the generated case budget when investigating symbol identity or range
+bugs:
+
+```sh
+SYMBOLPEEK_CONFORMANCE_CASES=512 cargo test --test conformance -- --nocapture
+```
+
+The scheduled `Extended conformance` workflow runs this larger budget weekly.
+When a generated case fails, keep the minimized reproducer as a permanent
+fixture under `tests/fixtures`.
+
 Additional end-to-end checks:
 
 ```sh

@@ -452,6 +452,51 @@ fn searches_function_valued_class_fields_as_methods() {
 }
 
 #[test]
+fn searches_mutation_callbacks_with_full_identity_and_declaration_ranges() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/navigation");
+    let result = TypeScriptAdapter
+        .search_symbols(&SearchSymbolsRequest {
+            path: root.display().to_string(),
+            query: "EventCreation.on".to_owned(),
+            kind: None,
+            max_results: None,
+            offset: None,
+        })
+        .expect("mutation callback search should resolve");
+    let mut callbacks = result
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name.ends_with(".onSuccess"))
+        .map(|symbol| {
+            (
+                symbol.name.as_str(),
+                symbol.kind,
+                symbol.lines.start,
+                symbol.lines.end,
+            )
+        })
+        .collect::<Vec<_>>();
+    callbacks.sort_by_key(|callback| callback.2);
+    assert_eq!(
+        callbacks,
+        [
+            (
+                "EventCreation.onCreateEvent.onSuccess",
+                SymbolKind::ArrowFunction,
+                13,
+                15,
+            ),
+            (
+                "EventCreation.onEditEvent.onSuccess",
+                SymbolKind::ArrowFunction,
+                21,
+                23,
+            ),
+        ]
+    );
+}
+
+#[test]
 fn paginates_workspace_symbol_search_in_a_stable_total_order() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/navigation");
     let search = |max_results, offset| {

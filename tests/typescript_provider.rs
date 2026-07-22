@@ -32,6 +32,15 @@ fn class_fields_file() -> SourceFile {
     }
 }
 
+fn mutation_callbacks_file() -> SourceFile {
+    SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/mutation_callbacks.tsx"),
+        source: Arc::from(include_str!("fixtures/navigation/mutation_callbacks.tsx")),
+        extension: "tsx".to_owned(),
+    }
+}
+
 #[test]
 fn lists_only_top_level_symbols_with_ast_kinds() {
     let file = sample_file();
@@ -347,6 +356,90 @@ function other() {\n  const value = 2;\n  return value;\n}\n";
             assert!(candidates.contains("other.value"), "got: {candidates}");
         }
         other => panic!("expected AmbiguousSymbol, got {other:?}"),
+    }
+}
+
+#[test]
+fn preserves_mutation_callback_containers_ranges_and_ambiguity() {
+    let file = mutation_callbacks_file();
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("mutation callback fixture should parse");
+
+    let create = parsed
+        .read_symbol(&file, "EventCreation.onCreateEvent.onSuccess")
+        .expect("create callback should resolve by full container path");
+    let edit = parsed
+        .read_symbol(&file, "EventCreation.onEditEvent.onSuccess")
+        .expect("edit callback should resolve by full container path");
+    assert!(create.source.contains("created"));
+    assert!(!create.source.contains("edited"));
+    assert!(edit.source.contains("edited"));
+    assert!(!edit.source.contains("created"));
+    assert_eq!((create.lines.start, create.lines.end), (13, 15));
+    assert_eq!((edit.lines.start, edit.lines.end), (21, 23));
+
+    let error = parsed
+        .read_symbol(&file, "EventCreation.onSuccess")
+        .expect_err("partially qualified callback should be ambiguous");
+    match error {
+        SymbolPeekError::AmbiguousSymbol { candidates, .. } => assert_eq!(
+            candidates,
+            "EventCreation.onCreateEvent.onSuccess, EventCreation.onEditEvent.onSuccess"
+        ),
+        other => panic!("expected AmbiguousSymbol, got {other:?}"),
+    }
+
+    let outline = parsed
+        .get_document_outline(&file, None)
+        .expect("mutation callback outline should resolve");
+    let component = outline
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "EventCreation")
+        .expect("outline should contain EventCreation");
+    for (parent_name, expected_lines) in [("onCreateEvent", (13, 15)), ("onEditEvent", (21, 23))] {
+        let parent = component
+            .children
+            .iter()
+            .find(|symbol| symbol.name == parent_name)
+            .unwrap_or_else(|| panic!("outline should contain {parent_name}"));
+        let callback = parent
+            .children
+            .iter()
+            .find(|symbol| symbol.name == "onSuccess")
+            .unwrap_or_else(|| panic!("{parent_name} should contain onSuccess"));
+        assert_eq!((callback.lines.start, callback.lines.end), expected_lines);
+    }
+}
+
+#[test]
+fn derives_callback_containers_from_object_and_tuple_bindings() {
+    let source = "function Examples() {\n\
+  const {trigger: onCreateEvent, isMutating: isCreating} = useSWRMutation(createEvent, {onSuccess: () => 'swr'});\n\
+  const [editEvent, {loading: isEditing}] = useMutation(EDIT_EVENT, {onCompleted: () => 'apollo'});\n\
+  const {mutateAsync: onSave, isPending} = useMutation(saveEvent, {onSuccess: () => 'async'});\n\
+  const {executeLater: saveDraft, isBusy} = useCustomMutation(saveEvent, {onSettled: () => 'custom'});\n\
+}\n";
+    let file = SourceFile {
+        path: PathBuf::from("binding_callbacks.tsx"),
+        source: Arc::from(source),
+        extension: "tsx".to_owned(),
+    };
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("binding callback fixture should parse");
+
+    for (symbol, marker) in [
+        ("Examples.onCreateEvent.onSuccess", "swr"),
+        ("Examples.editEvent.onCompleted", "apollo"),
+        ("Examples.onSave.onSuccess", "async"),
+        ("Examples.saveDraft.onSettled", "custom"),
+    ] {
+        let callback = parsed
+            .read_symbol(&file, symbol)
+            .unwrap_or_else(|error| panic!("{symbol} should resolve: {error}"));
+        assert!(callback.source.contains(marker), "got: {}", callback.source);
     }
 }
 
