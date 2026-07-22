@@ -24,6 +24,10 @@ tar -xzf "$ARCHIVE" -C "$VERIFY_DIR"
 cp "$PROJECT_ROOT/tests/fixtures/sample.tsx" "$VERIFY_DIR/workspace/sample.tsx"
 
 "$VERIFY_DIR/$PACKAGE_NAME/symbolpeek" --version
+CODEX_HOME="$VERIFY_DIR/codex" CLAUDE_CONFIG_DIR="$VERIFY_DIR/claude" \
+  "$VERIFY_DIR/$PACKAGE_NAME/symbolpeek" install-skills all
+test -f "$VERIFY_DIR/codex/skills/symbolpeek/SKILL.md"
+test -f "$VERIFY_DIR/claude/skills/symbolpeek/SKILL.md"
 SYMBOLPEEK_SMOKE_USE_BUNDLED_RUNTIME=1 \
   node "$SCRIPT_DIR/smoke-test.mjs" \
   "$VERIFY_DIR/$PACKAGE_NAME/symbolpeek" \

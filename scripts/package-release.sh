@@ -29,11 +29,12 @@ fi
 mkdir -p "$DIST_DIR"
 rm -rf "$PACKAGE_DIR"
 rm -f "$ARCHIVE" "$ARCHIVE.sha256"
-mkdir -p "$PACKAGE_DIR/node_modules"
+mkdir -p "$PACKAGE_DIR/node_modules" "$PACKAGE_DIR/skills"
 
 cp "$BINARY_DIR/symbolpeek$EXE_SUFFIX" "$PACKAGE_DIR/"
 cp "$BINARY_DIR/sym$EXE_SUFFIX" "$PACKAGE_DIR/"
 cp -R "$PROJECT_ROOT/node_modules/typescript" "$PACKAGE_DIR/node_modules/"
+cp -R "$PROJECT_ROOT/skills/symbolpeek" "$PACKAGE_DIR/skills/"
 cp "$PROJECT_ROOT/README.md" "$PROJECT_ROOT/MCP_TOOLS.md" "$PACKAGE_DIR/"
 
 tar -C "$DIST_DIR" -czf "$ARCHIVE" "$PACKAGE_NAME"

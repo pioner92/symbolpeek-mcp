@@ -1,0 +1,12 @@
+interface:
+  display_name: "SymbolPeek"
+  short_description: "Token-efficient source and JSON navigation"
+  default_prompt: "Use $symbolpeek to inspect this codebase with targeted MCP symbol reads before opening whole files."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "symbolpeek"
+      description: "SymbolPeek source-navigation MCP server"
+      transport: "stdio"
+policy:
+  allow_implicit_invocation: true

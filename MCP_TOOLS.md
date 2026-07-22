@@ -4,6 +4,14 @@ Full request/response reference for every SymbolPeek MCP tool. For a high-level
 overview of what each tool answers, see the capability tables in the
 [README](README.md#capabilities-at-a-glance).
 
+The MCP initialization response instructs compatible clients to use SymbolPeek
+proactively before reading whole supported files: discover with
+`get_document_outline`, `list_symbols`, or `search_symbols`, then retrieve only
+the required declaration with `read_symbol` or `read_symbol_context`. The
+prebuilt installers additionally install the bundled
+[`symbolpeek` skill](skills/symbolpeek/SKILL.md) for Codex and Claude Code. This
+includes explicit guidance for large JSON locale and configuration files.
+
 Absolute file paths are canonical and safest when used from an external MCP
 client. Relative paths first use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then
 filesystem roots supplied by a compatible MCP client. With multiple roots,

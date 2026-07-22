@@ -47,8 +47,8 @@ jobs:
             smoke: false
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -63,6 +63,12 @@ jobs:
       - name: Verify binary version
         shell: bash
         run: target/${{ matrix.target }}/release/symbolpeek${{ matrix.exe_suffix }} --version
+      - name: Verify agent guidance installation
+        shell: bash
+        env:
+          CODEX_HOME: ${{ runner.temp }}/symbolpeek-codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/symbolpeek-claude
+        run: target/${{ matrix.target }}/release/symbolpeek${{ matrix.exe_suffix }} install-skills all
       - name: Run release smoke test
         if: matrix.smoke
         run: node scripts/smoke-test.mjs target/${{ matrix.target }}/release/symbolpeek
@@ -80,14 +86,16 @@ jobs:
           $PackageDir = Join-Path "dist" $PackageName
           $Archive = Join-Path "dist" "$PackageName.zip"
           New-Item -ItemType Directory -Force (Join-Path $PackageDir "node_modules") | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $PackageDir "skills") | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/symbolpeek.exe" $PackageDir
           Copy-Item "target/${{ matrix.target }}/release/sym.exe" $PackageDir
           Copy-Item -Recurse "node_modules/typescript" (Join-Path $PackageDir "node_modules")
+          Copy-Item -Recurse "skills/symbolpeek" (Join-Path $PackageDir "skills")
           Copy-Item "README.md", "MCP_TOOLS.md" $PackageDir
           Compress-Archive -Path $PackageDir -DestinationPath $Archive -Force
           $Hash = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
           "$Hash  $PackageName.zip" | Set-Content -NoNewline "$Archive.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.target }}
           path: dist/symbolpeek-${{ matrix.target }}.${{ matrix.asset_suffix }}*
@@ -98,7 +106,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: release-*
           path: dist
@@ -106,6 +114,7 @@ jobs:
       - name: Create release and upload binaries
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

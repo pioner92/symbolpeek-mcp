@@ -23,7 +23,7 @@ Ask for the symbol you need—not the entire file.
 </p>
 
 <p>
-  <a href="#install-prebuilt-binary">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
   <a href="#connect-to-codex">Connect to Codex</a> ·
   <a href="#connect-to-claude-code">Connect to Claude Code</a> ·
   <a href="MCP_TOOLS.md">Tool reference</a>
@@ -37,6 +37,38 @@ use embedded Tree-sitter for reliable syntax-only operations.
 
 For an agent this means fewer whole files pulled into the context window, and
 fewer round-trips spent locating and verifying symbols by hand.
+
+## Quick start
+
+No clone, Rust toolchain, or manual build is required.
+
+**macOS or Linux:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh | sh
+
+# Codex
+codex mcp add symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
+
+# Claude Code
+claude mcp add --transport stdio --scope user symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.ps1 | iex
+
+# Codex
+codex mcp add symbolpeek -- "$env:LOCALAPPDATA\SymbolPeek\symbolpeek.exe"
+
+# Claude Code
+claude mcp add --transport stdio --scope user symbolpeek -- "$env:LOCALAPPDATA\SymbolPeek\symbolpeek.exe"
+```
+
+Restart the client. That is all: the installer verifies the downloaded binary,
+adds it to the command path, and installs agent guidance that tells Codex and
+Claude to use SymbolPeek proactively for supported code and large JSON files.
 
 ## Why SymbolPeek?
 
@@ -215,8 +247,11 @@ applicable to JSON and remain unsupported. `.jsonc` and JSON5 are not included.
 
 Prebuilt release packages require no repository clone, Rust toolchain, build,
 or npm install. Each archive contains `symbolpeek`, the `sym` alias, and the
-locked TypeScript runtime. Install Node.js 20 or newer only when TS/JS analysis
-is needed; Rust, Python, Java, Go, and JSON support is self-contained.
+locked TypeScript runtime. The installer also installs the SymbolPeek agent
+skill for Codex and Claude Code, so connected agents are guided to use targeted
+symbol reads before opening whole files. Install Node.js 20 or newer only when
+TS/JS analysis is needed; Rust, Python, Java, Go, and JSON support is
+self-contained.
 
 ### macOS and Linux
 
@@ -227,7 +262,9 @@ curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/script
 ```
 
 It verifies the release checksum, installs the package under
-`~/.local/share/symbolpeek`, and links both commands into `~/.local/bin`.
+`~/.local/share/symbolpeek`, links both commands into `~/.local/bin`, and
+installs the agent guidance under `~/.codex/skills/symbolpeek` and
+`~/.claude/skills/symbolpeek`.
 Ensure that directory is on `PATH`, then verify the installation:
 
 ```sh
@@ -257,9 +294,9 @@ irm https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/insta
 ```
 
 It verifies the checksum, installs into `%LOCALAPPDATA%\SymbolPeek`, adds that
-directory to the user `PATH`, and prints ready-to-run Codex and Claude Code
-commands. Open a new terminal if another process does not see the updated
-`PATH` immediately.
+directory to the user `PATH`, installs the Codex and Claude Code skills, and
+prints ready-to-run client commands. Open a new terminal if another process
+does not see the updated `PATH` immediately.
 
 ### Direct downloads
 
@@ -274,60 +311,16 @@ commands. Open a new terminal if another process does not see the updated
 Every package has a matching `.sha256` asset. All versions and release notes
 are available on the [GitHub Releases page](https://github.com/pioner92/symbolpeek-mcp/releases).
 
+When installing from a manually extracted archive, install the agent guidance
+once with:
+
+```sh
+symbolpeek install-skills all
+```
+
 SymbolPeek communicates over stdio when used as an MCP server. It normally
 does not print a terminal interface; an MCP client starts it and exchanges
 JSON-RPC messages through stdin/stdout.
-
-## Build from source (contributors)
-
-Requirements:
-
-- Rust 1.82 or newer;
-- Node.js + npm (only for TS/JS operations and the release script).
-
-From a checkout of the repository:
-
-```sh
-sh scripts/build-release.sh
-cargo test
-node scripts/smoke-test.mjs target/release/symbolpeek
-node scripts/benchmark-latency.mjs target/release/symbolpeek 1,10,50
-```
-
-`scripts/build-release.sh` installs the locked npm dependencies, builds both
-release executables, and creates a checksummed distributable archive under
-`dist/` for the current platform.
-
-The latency script reports cold/warm p50, p95, and max for sequential batches.
-Its Tree-sitter phase deliberately uses an invalid Node path, so it also verifies
-that Rust/Python/Java/Go/JSON-only searches never start Node.
-
-The release build creates two equivalent executables:
-
-```text
-target/release/symbolpeek   canonical command
-target/release/sym          convenient short alias
-```
-
-The Rust binaries alone can also be installed by:
-
-```sh
-cargo install --path .
-```
-
-This source-only `cargo install` does not include the TypeScript runtime. For
-TS/JS operations, use `scripts/run-release.sh` from a checkout where `npm ci`
-has run, or install a prebuilt release package.
-
-Use `symbolpeek` in documentation and automation. Use `sym` when you want a
-shorter command:
-
-```sh
-symbolpeek stats
-sym stats
-symbolpeek --help
-sym --help
-```
 
 ## CLI statistics
 
@@ -398,11 +391,18 @@ codex mcp add symbolpeek -- symbolpeek
 codex mcp list
 ```
 
+The one-line binary installer already installs the `symbolpeek` skill. If the
+archive was extracted manually, run `symbolpeek install-skills codex`. Restart
+Codex after registering the MCP server so it discovers both the server and the
+skill. The skill tells Codex to prefer outline/search/symbol reads for supported
+source and JSON files, while still allowing ordinary reads when full-file
+context is actually needed.
+
 If `~/.local/bin` is not on the environment inherited by Codex, use the
 absolute path `~/.local/share/symbolpeek/symbolpeek`. On Windows, use the
 absolute path to `symbolpeek.exe` from the extracted package.
 
-Restart Codex and try:
+Try:
 
 ```text
 Use the symbolpeek MCP server. List the symbols in the absolute path
@@ -427,12 +427,32 @@ claude mcp list
 claude mcp get symbolpeek
 ```
 
+The one-line installer also installs the same guidance as a Claude Code skill.
+For a manually extracted archive, run `symbolpeek install-skills claude`, then
+restart Claude Code.
+
 Inside Claude Code, run `/mcp` to inspect the connection. Use
 `--scope project` when the server should be configured only for the current
 project.
 
 The checked-in Claude configuration template is available at
 [`config/claude-mcp.json.example`](config/claude-mcp.json.example).
+
+## Automatic agent guidance
+
+SymbolPeek uses two complementary discovery mechanisms:
+
+- Every MCP initialization response includes concise server instructions to
+  inspect outlines or search first, then retrieve only the required symbol.
+  This works with any MCP client that exposes server instructions to its LLM.
+- Codex and Claude Code receive the bundled
+  [`symbolpeek` skill](skills/symbolpeek/SKILL.md), whose trigger description
+  covers code exploration and large JSON locale/configuration files.
+
+No MCP server can force a client model to call a tool, but these mechanisms make
+the intended workflow part of the model's default context. For another agent
+that does not consume MCP server instructions or `SKILL.md`, copy the short
+workflow from the bundled skill into that client's global agent instructions.
 
 ## Configuration
 
@@ -471,6 +491,10 @@ TypeScript provider, with no database or persistent AST cache — every request
 reads the current source. The full design, request lifecycle, source layout,
 and contributor verification suite live in
 **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+Repository checkout, source builds, tests, local packaging, and release
+instructions are intentionally kept out of this user-focused README. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)** when working on SymbolPeek itself.
 
 ## Roadmap
 
