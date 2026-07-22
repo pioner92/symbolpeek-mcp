@@ -294,6 +294,14 @@ function visit(node, scope, topLevel, parent) {
     return;
   }
 
+  if (ts.isPropertyDeclaration(node) && node.initializer
+    && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+    const name = nameOf(node.name);
+    addDefinition(name, node, node.name, "method", "function", scope, false);
+    visit(node.initializer, name ? [...scope, name] : scope, false, node);
+    return;
+  }
+
   if (ts.isInterfaceDeclaration(node)) {
     addDefinition(nameOf(node.name), node, node.name, "interface", "type", scope, topLevel);
     visitChildren(node, scope, false);
@@ -1041,6 +1049,13 @@ function searchDefinitionsInFile(file) {
       && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       const name = nameOf(node.name);
       if (name) add(name, node, node.name, "object_method", scope);
+      visit(node.initializer, name ? [...scope, name] : scope, node);
+      return;
+    }
+    if (ts.isPropertyDeclaration(node) && node.initializer
+      && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+      const name = nameOf(node.name);
+      if (name) add(name, node, node.name, "method", scope);
       visit(node.initializer, name ? [...scope, name] : scope, node);
       return;
     }

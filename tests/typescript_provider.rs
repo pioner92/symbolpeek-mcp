@@ -23,6 +23,15 @@ fn screens_file() -> SourceFile {
     }
 }
 
+fn class_fields_file() -> SourceFile {
+    SourceFile {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/navigation/class_fields.ts"),
+        source: Arc::from(include_str!("fixtures/navigation/class_fields.ts")),
+        extension: "ts".to_owned(),
+    }
+}
+
 #[test]
 fn lists_only_top_level_symbols_with_ast_kinds() {
     let file = sample_file();
@@ -79,6 +88,84 @@ fn reads_exported_and_nested_symbols_from_exact_spans() {
         .read_symbol(&file, "sendMessage.normalize")
         .expect("nested symbol should exist");
     assert!(nested.source.starts_with("function normalize()"));
+}
+
+#[test]
+fn treats_function_valued_class_fields_as_methods_and_preserves_their_scope() {
+    let file = class_fields_file();
+    let parsed = TypeScriptAdapter
+        .parse(&file)
+        .expect("class-field fixture should parse");
+
+    let list = parsed.list_symbols(&file, None, None);
+    assert_eq!(
+        list.symbols
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>(),
+        ["MessageStore"]
+    );
+
+    for symbol in ["MessageStore.addMessage", "MessageStore.sendMessage"] {
+        let read = parsed
+            .read_symbol(&file, symbol)
+            .expect("function-valued class field should resolve");
+        assert_eq!(read.kind, symbolpeek::types::SymbolKind::Method);
+
+        let context = parsed
+            .read_context(&file, symbol)
+            .expect("function-valued class field context should resolve");
+        assert_eq!(context.requested_symbol.symbol, symbol);
+        assert_eq!(
+            context.requested_symbol.kind,
+            symbolpeek::types::SymbolKind::Method
+        );
+    }
+
+    let outline = parsed
+        .get_document_outline(&file, None)
+        .expect("class-field outline should resolve");
+    let store = outline
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "MessageStore")
+        .expect("outline should contain MessageStore");
+    assert_eq!(
+        store
+            .children
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>(),
+        ["addMessage", "sendMessage", "getInstance"]
+    );
+    assert!(store
+        .children
+        .iter()
+        .all(|symbol| symbol.kind == symbolpeek::types::SymbolKind::Method));
+    assert!(!store
+        .children
+        .iter()
+        .any(|symbol| symbol.name == "pendingFromDB" || symbol.name == "forwardBlock"));
+
+    let add_message = store
+        .children
+        .iter()
+        .find(|symbol| symbol.name == "addMessage")
+        .expect("outline should contain addMessage");
+    assert!(add_message
+        .children
+        .iter()
+        .any(|symbol| symbol.name == "pendingFromDB"));
+
+    let send_message = store
+        .children
+        .iter()
+        .find(|symbol| symbol.name == "sendMessage")
+        .expect("outline should contain sendMessage");
+    assert!(send_message
+        .children
+        .iter()
+        .any(|symbol| symbol.name == "forwardBlock"));
 }
 
 #[test]

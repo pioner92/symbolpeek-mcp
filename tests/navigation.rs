@@ -432,6 +432,26 @@ fn searches_symbols_across_the_workspace() {
 }
 
 #[test]
+fn searches_function_valued_class_fields_as_methods() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/navigation");
+    let result = TypeScriptAdapter
+        .search_symbols(&SearchSymbolsRequest {
+            path: root.display().to_string(),
+            query: "MessageStore.addMessage".to_owned(),
+            kind: Some(SymbolKind::Method),
+            max_results: None,
+            offset: None,
+        })
+        .expect("class-field method search should resolve");
+
+    assert!(result.symbols.iter().any(|symbol| {
+        symbol.name == "MessageStore.addMessage"
+            && symbol.kind == SymbolKind::Method
+            && result.files[symbol.file_idx].ends_with("navigation/class_fields.ts")
+    }));
+}
+
+#[test]
 fn paginates_workspace_symbol_search_in_a_stable_total_order() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/navigation");
     let search = |max_results, offset| {
