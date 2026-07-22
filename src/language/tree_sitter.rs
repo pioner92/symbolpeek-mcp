@@ -6,6 +6,7 @@
 //! Tree-sitter providers do not need to reimplement MCP behavior.
 
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     path::{Path, PathBuf},
 };
@@ -48,6 +49,42 @@ struct SyntaxDefinition {
 pub struct SyntaxIndex {
     definitions: Vec<SyntaxDefinition>,
     complete: bool,
+    /// Built once per file: measuring a prefix from byte zero for every
+    /// declaration is quadratic in file size (a 16k-declaration file spent
+    /// seconds in it).
+    lines: Option<LineIndex>,
+}
+
+/// Byte offsets of every line start, so a byte offset maps to a 1-based
+/// (row, column) with a binary search instead of a scan from the file start.
+#[derive(Debug)]
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn build(source: &str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(offset, _)| offset + 1),
+        );
+        Self { starts }
+    }
+
+    fn point(&self, source: &str, byte: usize) -> (usize, usize) {
+        let byte = byte.min(source.len());
+        let row = self.starts.partition_point(|start| *start <= byte);
+        let line_start = self.starts[row - 1];
+        let column = source
+            .get(line_start..byte)
+            .map_or(0, |text| text.chars().count())
+            + 1;
+        (row, column)
+    }
 }
 
 /// Language-specific description of one addressable syntax declaration.
@@ -66,6 +103,7 @@ impl Default for SyntaxIndex {
         Self {
             definitions: Vec::new(),
             complete: true,
+            lines: None,
         }
     }
 }
@@ -84,8 +122,13 @@ impl SyntaxIndex {
             return None;
         }
         let start_byte = declaration_start(node, source);
-        let start = point_for_byte(source, start_byte);
-        let end = point_for_byte(source, node.end_byte());
+        let (start, end) = {
+            let lines = self.lines.get_or_insert_with(|| LineIndex::build(source));
+            (
+                lines.point(source, start_byte),
+                lines.point(source, node.end_byte()),
+            )
+        };
         let id = self.definitions.len();
         self.definitions.push(SyntaxDefinition {
             name: definition.name,
@@ -107,6 +150,84 @@ impl SyntaxIndex {
         Some(id)
     }
 
+    /// Gives declarations that ended up sharing a qualified name an
+    /// `@line:column` selector, so every name a tool reports can be read back.
+    /// Without it a Java overload pair, several Go `init` functions, or
+    /// `#[cfg]`-gated Rust twins are listed by the outline but reachable by no
+    /// name at all.
+    fn disambiguate_duplicate_names(&mut self) {
+        let mut occurrences: HashMap<&str, usize> = HashMap::new();
+        for definition in &self.definitions {
+            *occurrences.entry(definition.name.as_str()).or_default() += 1;
+        }
+        let duplicated = occurrences
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(name, _)| name.to_owned())
+            .collect::<Vec<_>>();
+        if duplicated.is_empty() {
+            return;
+        }
+
+        for name in duplicated {
+            let roots = self
+                .definitions
+                .iter()
+                .enumerate()
+                .filter(|(_, definition)| definition.name == name)
+                .map(|(id, definition)| {
+                    (
+                        id,
+                        definition.start_byte,
+                        definition.end_byte,
+                        format!(
+                            "{name}@{}:{}",
+                            definition.lines.start, definition.start_column
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            for (root, start, end, selector) in roots {
+                let prefix = format!("{name}.");
+                for id in 0..self.definitions.len() {
+                    let nested = self.definitions[id].start_byte >= start
+                        && self.definitions[id].end_byte <= end;
+                    if id != root && !(nested && self.definitions[id].name.starts_with(&prefix)) {
+                        continue;
+                    }
+                    if id == root {
+                        // The outline and search list leaf names, so the leaf
+                        // carries the selector too — otherwise those tools keep
+                        // reporting a name that cannot be read back.
+                        let leaf_selector = format!(
+                            "{}@{}:{}",
+                            self.definitions[id].display_name,
+                            self.definitions[id].lines.start,
+                            self.definitions[id].start_column
+                        );
+                        self.definitions[id].display_name = leaf_selector;
+                        self.definitions[id].name.clone_from(&selector);
+                    } else {
+                        let suffix = self.definitions[id].name[name.len()..].to_owned();
+                        self.definitions[id].name = format!("{selector}{suffix}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The dotted path an outline consumer would compose for this definition.
+    fn outline_path(&self, id: usize) -> String {
+        let mut parts = vec![self.definitions[id].display_name.as_str()];
+        let mut current = self.definitions[id].parent;
+        while let Some(parent) = current {
+            parts.push(self.definitions[parent].display_name.as_str());
+            current = self.definitions[parent].parent;
+        }
+        parts.reverse();
+        parts.join(".")
+    }
+
     fn top_level(&self) -> impl Iterator<Item = &SyntaxDefinition> {
         self.definitions
             .iter()
@@ -125,11 +246,44 @@ impl SyntaxIndex {
             [] => {}
         }
 
+        // `E.a` should list `E.a@2:5` and `E.a@4:5` rather than report the
+        // disambiguated declarations as missing.
+        let by_base = self
+            .definitions
+            .iter()
+            .filter(|definition| occurrence_base(&definition.name) == symbol)
+            .collect::<Vec<_>>();
+        match by_base.as_slice() {
+            [definition] => return Resolution::Found(definition),
+            [_, _, ..] => return Resolution::Ambiguous(ambiguity_labels(by_base)),
+            [] => {}
+        }
+
+        // Outlines label Rust impl blocks `impl Client` while the canonical
+        // name is `Client.send`, so composing an outline path — the obvious
+        // thing to do with a tree — must resolve too. Only reached once the
+        // canonical forms miss, so it costs nothing on the common path.
+        let by_outline_path = self
+            .definitions
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| self.outline_path(*id) == symbol)
+            .map(|(_, definition)| definition)
+            .collect::<Vec<_>>();
+        match by_outline_path.as_slice() {
+            [definition] => return Resolution::Found(definition),
+            [_, _, ..] => return Resolution::Ambiguous(ambiguity_labels(by_outline_path)),
+            [] => {}
+        }
+
         if !symbol.starts_with('/') {
             let matches = self
                 .definitions
                 .iter()
-                .filter(|definition| definition.display_name == symbol)
+                .filter(|definition| {
+                    definition.display_name == symbol
+                        || occurrence_base(&definition.display_name) == symbol
+                })
                 .collect::<Vec<_>>();
             return match matches.as_slice() {
                 [definition] => Resolution::Found(definition),
@@ -616,8 +770,10 @@ fn parse_index<L: TreeSitterLanguage>(file: &SourceFile) -> Result<SyntaxIndex, 
     let mut index = SyntaxIndex {
         definitions: Vec::new(),
         complete: !tree.root_node().has_error(),
+        lines: None,
     };
     L::index(tree.root_node(), file.source.as_ref(), &mut index);
+    index.disambiguate_duplicate_names();
     Ok(index)
 }
 
@@ -797,19 +953,8 @@ fn declaration_start(node: Node<'_>, source: &str) -> usize {
     start
 }
 
-fn point_for_byte(source: &str, byte: usize) -> (usize, usize) {
-    let byte = byte.min(source.len());
-    let prefix = &source[..byte];
-    let row = prefix.bytes().filter(|value| *value == b'\n').count() + 1;
-    let column = prefix
-        .rsplit_once('\n')
-        .map_or_else(|| prefix.chars().count(), |(_, tail)| tail.chars().count())
-        + 1;
-    (row, column)
-}
-
 fn leaf_name(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, leaf)| leaf)
+    occurrence_base(name.rsplit_once('.').map_or(name, |(_, leaf)| leaf))
 }
 
 fn split_parent_member(name: &str) -> Option<(&str, &str)> {
@@ -820,11 +965,33 @@ fn split_parent_member(name: &str) -> Option<(&str, &str)> {
     name.rsplit_once('.')
 }
 
+/// Candidate names, in source order. Every label is a name the caller can send
+/// straight back to `read_symbol`.
 fn ambiguity_labels(definitions: Vec<&SyntaxDefinition>) -> Vec<String> {
-    definitions
+    let mut ordered = definitions;
+    ordered.sort_by_key(|definition| definition.start_byte);
+    ordered
         .into_iter()
-        .map(|definition| format!("{} at line {}", definition.name, definition.lines.start))
+        .map(|definition| definition.name.clone())
         .collect()
+}
+
+/// A qualified name without its `@line:column` occurrence selector.
+fn occurrence_base(name: &str) -> &str {
+    let Some((base, occurrence)) = name.rsplit_once('@') else {
+        return name;
+    };
+    let mut parts = occurrence.split(':');
+    let valid = matches!((parts.next(), parts.next(), parts.next()), (Some(line), Some(column), None)
+        if !line.is_empty()
+            && !column.is_empty()
+            && line.bytes().all(|byte| byte.is_ascii_digit())
+            && column.bytes().all(|byte| byte.is_ascii_digit()));
+    if valid {
+        base
+    } else {
+        name
+    }
 }
 
 enum Resolution<'a> {

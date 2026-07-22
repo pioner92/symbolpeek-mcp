@@ -99,9 +99,70 @@ fn collect_declaration(
         );
         return;
     }
+    if matches!(
+        node.kind(),
+        "if_statement"
+            | "try_statement"
+            | "with_statement"
+            | "for_statement"
+            | "while_statement"
+            | "match_statement"
+    ) {
+        collect_compound_statement(
+            node,
+            source,
+            index,
+            parent,
+            prefix,
+            top_level,
+            functions_are_methods,
+        );
+        return;
+    }
     if (top_level || functions_are_methods) && node.kind() == "expression_statement" {
         if let Some(assignment) = first_named_child_of_kind(node, "assignment") {
             collect_assignment(assignment, source, index, parent, prefix, top_level);
+        }
+    }
+}
+
+/// Python has no block scope, so a definition guarded by `if`/`try` still
+/// belongs to the enclosing module or class — `try: from x import y / except
+/// ImportError: def y(...)` and version-gated methods are ordinary shapes. The
+/// enclosing scope is therefore carried through unchanged.
+fn collect_compound_statement(
+    node: Node<'_>,
+    source: &str,
+    index: &mut SyntaxIndex,
+    parent: Option<usize>,
+    prefix: Option<&str>,
+    top_level: bool,
+    functions_are_methods: bool,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "block" => collect_scope(
+                child,
+                source,
+                index,
+                parent,
+                prefix,
+                top_level,
+                functions_are_methods,
+            ),
+            "elif_clause" | "else_clause" | "except_clause" | "finally_clause" | "case_clause" => {
+                collect_compound_statement(
+                    child,
+                    source,
+                    index,
+                    parent,
+                    prefix,
+                    top_level,
+                    functions_are_methods,
+                );
+            }
+            _ => {}
         }
     }
 }

@@ -5,6 +5,31 @@ All notable changes to SymbolPeek are documented here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- **Python definitions guarded by control flow were missing entirely.** A
+  function or class inside `if`, `try`, `with`, or a loop was absent from
+  `get_document_outline` and unreachable by `read_symbol`, so the standard
+  `try: from _fast import loads / except ImportError: def loads(...)` fallback
+  had no addressable symbol. Python has no block scope, so these are indexed in
+  their enclosing module or class.
+- **Duplicate names were unreachable outside TypeScript too.** Java overloads,
+  repeated Go `init` functions, and `#[cfg]`-gated Rust twins were listed by the
+  outline while `read_symbol` answered with candidates like `E.a at line 2` —
+  a label, not a name that could be sent back. They now receive the same
+  `@line:column` occurrence selectors TypeScript uses, and every reported
+  candidate reads back.
+- Composing a path from an outline now resolves for Rust impl blocks:
+  `impl Client.send` reaches the declaration whose canonical name is
+  `Client.send`.
+
+### Changed
+
+- Tree-sitter languages (Rust, Python, Java, Go) no longer map byte offsets to
+  line/column by scanning from the start of the file for every declaration,
+  which was quadratic in file size. A 16k-declaration file went from 5.2s to
+  0.2s, and outline time is now linear in file size.
+
 ## [0.4.1] — 2026-07-22
 
 ### Fixed

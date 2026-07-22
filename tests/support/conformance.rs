@@ -742,6 +742,51 @@ pub fn assert_semantic_case(case: &GeneratedCase) -> Result<(), String> {
     Ok(())
 }
 
+/// The contract that matters for every language: a name any tool reports must
+/// read back to the same declaration. Ambiguity is acceptable only when it
+/// names candidates that themselves read back — an error listing the name just
+/// asked for leaves the declaration unreachable.
+pub fn assert_outline_reads_back(
+    adapter: &dyn LanguageAdapter,
+    path: &Path,
+    extension: &str,
+) -> Result<(), String> {
+    let _guard = GENERATED_CASE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let file = SourceFile {
+        path: path.to_path_buf(),
+        source: Arc::from(source),
+        extension: extension.to_owned(),
+    };
+    let parsed = adapter.parse(&file).map_err(|error| error.to_string())?;
+    let outline = parsed
+        .get_document_outline(&file, None)
+        .map_err(|error| error.to_string())?;
+    let mut outline_symbols = Vec::new();
+    flatten_outline(&outline.symbols, "", &mut outline_symbols);
+    for symbol in &outline_symbols {
+        let read = parsed
+            .read_symbol(&file, &symbol.name)
+            .map_err(|error| format!("outline→read {}: {error}", symbol.name))?;
+        if (read.kind, read.lines.start, read.lines.end) != (symbol.kind, symbol.start, symbol.end)
+        {
+            return Err(format!(
+                "outline→read mismatch for {}: outline {:?} {}-{}, read {:?} {}-{}",
+                symbol.name,
+                symbol.kind,
+                symbol.start,
+                symbol.end,
+                read.kind,
+                read.lines.start,
+                read.lines.end
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn assert_corpus_file(path: &Path, extension: &str) -> Result<(), String> {
     // Shares the adapter (and its worker) with the generated cases, so it takes
     // the same lock rather than racing them.

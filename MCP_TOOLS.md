@@ -191,8 +191,16 @@ than a declaration, so an edit above it shifts the selector — resolve one from
 a current outline or search result instead of reusing a stored one.
 
 Rust impl methods use qualified names such as `Client.send`; trait impl methods
-use `<Client as Transport>.send`. Attached doc comments and attributes are
-included in the returned declaration source.
+use `<Client as Transport>.send`. The path an outline composes also resolves,
+so `impl Client.send` reaches the same declaration. Attached doc comments and
+attributes are included in the returned declaration source.
+
+`@line:column` occurrence selectors apply to every language, not just
+TypeScript: Java overloads, repeated Go `init` functions, and `#[cfg]`-gated
+Rust twins are reported as `Overloads.render@6:5`, `init@10:1`, and
+`platform_root@9:1`. Python definitions guarded by `if`, `try`, `with`, or a
+loop are indexed in their enclosing module or class, so a conditional import
+fallback is addressable like any other definition.
 
 JSON properties use RFC 6901 pointers such as
 `/checkout/errors/payment_failed`; `~` and `/` inside keys are escaped as `~0`

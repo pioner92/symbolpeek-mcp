@@ -7,8 +7,12 @@ use proptest::{
     test_runner::{Config, FileFailurePersistence, TestCaseError, TestRunner},
 };
 use support::conformance::{
-    assert_corpus_file, assert_generated_case, assert_isolated_corpus_file, assert_semantic_case,
-    render_case, BindingShape, CallbackShape, CaseSpec, ContainerShape, FormattingShape, Language,
+    assert_corpus_file, assert_generated_case, assert_isolated_corpus_file,
+    assert_outline_reads_back, assert_semantic_case, render_case, BindingShape, CallbackShape,
+    CaseSpec, ContainerShape, FormattingShape, Language,
+};
+use symbolpeek::language::{
+    go::GoAdapter, java::JavaAdapter, python::PythonAdapter, rust::RustAdapter, LanguageAdapter,
 };
 
 fn case_strategy() -> impl Strategy<Value = CaseSpec> {
@@ -210,6 +214,68 @@ fn curated_real_world_corpus_obeys_cross_tool_contracts() {
         let path = root.join(relative);
         assert_corpus_file(&path, extension)
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+/// The same reachability contract the TypeScript suite enforces, applied to
+/// every other language. Each fixture holds declarations that legitimately
+/// share a qualified name (Java overloads, several Go `init`s, `#[cfg]`-gated
+/// Rust twins) or hide behind control flow (Python), which is exactly where a
+/// name reported by one tool used to be unreadable by another.
+#[test]
+fn every_language_reports_only_readable_names() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let cases: [(&dyn LanguageAdapter, &str, &str); 5] = [
+        // Kept out of `fixtures/rust`, whose contents an end-to-end workspace
+        // search counts.
+        (&RustAdapter::new(), "reachability/cfg_twins.rs", "rs"),
+        (&RustAdapter::new(), "rust/sample.rs", "rs"),
+        (
+            &PythonAdapter::new(),
+            "python/conditional_definitions.py",
+            "py",
+        ),
+        (&GoAdapter::new(), "go/duplicate_init.go", "go"),
+        (&JavaAdapter::new(), "java/Overloads.java", "java"),
+    ];
+    for (adapter, relative, extension) in cases {
+        let path = root.join(relative);
+        assert_outline_reads_back(adapter, &path, extension)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+/// This repository is the only large body of real Rust that ships with the
+/// project, and unlike a fixture nobody wrote it to satisfy the indexer.
+#[test]
+fn own_rust_sources_report_only_readable_names() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    collect_rust_sources(&root, &mut sources);
+    sources.sort();
+    assert!(
+        sources.len() > 5,
+        "expected this crate's sources, found {}",
+        sources.len()
+    );
+    let adapter = RustAdapter::new();
+    for path in sources {
+        assert_outline_reads_back(&adapter, &path, "rs")
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+fn collect_rust_sources(directory: &PathBuf, output: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_sources(&path, output);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            output.push(path);
+        }
     }
 }
 
