@@ -666,7 +666,7 @@ impl SymbolPeekServer {
 
 #[tool_handler(
     name = "symbolpeek",
-    version = "0.1.0",
+    version = "0.2.0",
     instructions = "Minimal TS/JS/Rust/Python/Java/Go symbol context. get_capabilities lists exact support levels."
 )]
 impl ServerHandler for SymbolPeekServer {
