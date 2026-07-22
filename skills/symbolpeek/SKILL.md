@@ -1,25 +1,31 @@
 ---
 name: symbolpeek
-description: Token-efficient source navigation through the SymbolPeek MCP server. Use proactively whenever Codex or Claude needs to explore, understand, search, or read supported source files (.ts, .tsx, .js, .jsx, .rs, .py, .java, .go) or structured JSON files, especially large locale/config files. Prefer this skill before opening whole files when the symbolpeek MCP tools are available.
+description: Token-efficient navigation of supported source files (.ts, .tsx, .js, .jsx, .rs, .py, .java, .go) and structured JSON through SymbolPeek MCP. Use proactively for code exploration, search, and targeted reads, especially before opening whole files or large locale/config JSON.
 ---
 
 # SymbolPeek
 
-Use SymbolPeek as the first read and discovery layer for supported files. Retrieve only the symbols or JSON branches needed for the task; open a whole file only when targeted operations are insufficient.
+Use SymbolPeek as the first read layer for supported files; retrieve only required declarations or JSON branches.
 
 ## Workflow
 
-1. Use absolute file paths. If language support is uncertain, call `get_capabilities` once.
-2. If the file is known, start with `get_document_outline` for hierarchy or `list_symbols` for a compact flat index.
-3. If only a name or concept is known, use `search_symbols` across the workspace.
-4. Fetch implementation with `read_symbol`. Use `read_symbol_context` when nearby imports, types, or enclosing code are also needed.
-5. For semantic questions, prefer `go_to_definition`, `find_references`, `find_implementations`, `get_type_info`, `find_dependencies`, or `get_call_hierarchy` when the capability matrix supports them.
-6. Fall back to normal file reads for unsupported formats, unresolved generated syntax, or edits that genuinely require whole-file context.
+1. Prefer absolute paths; call `get_capabilities` only when support is unclear.
+2. Known file: choose `get_document_outline` for hierarchy or `list_symbols` for a flat index; use both only when needed. Unknown location: use `search_symbols` on the workspace.
+3. Use `read_symbol` for exact source; use `read_symbol_context` for the symbol plus direct same-file helpers, types, and constants.
+4. For TS/JS semantics, select among `find_dependencies`, `find_references`, `find_callers`, `find_callees`, `go_to_definition`, `find_implementations`, `get_type`, `get_diagnostics`, and `get_call_hierarchy`.
+5. Use normal reads only for unsupported/generated syntax or necessary whole-file context.
 
-Do not repeatedly call `get_capabilities`, and do not request both an outline and a flat symbol list unless both views add value.
+## Capabilities
+
+Base operations are `read_symbol`, `list_symbols`, `search_symbols`, and `get_document_outline`.
+
+| Files | Support |
+| --- | --- |
+| TS/JS | Base is syntax; every other operation is semantic |
+| Rust | Base plus `find_dependencies`, `read_symbol_context`, and `find_implementations` (syntax) |
+| Python/Java/Go | Base plus `find_dependencies` and `read_symbol_context` (syntax) |
+| JSON | Base operations only |
 
 ## JSON
 
-Treat JSON object properties as RFC 6901 JSON Pointers. Start with `get_document_outline`, then call `read_symbol` for the exact branch, for example `/checkout/errors/payment_failed`. Escape `~` as `~0` and `/` as `~1` inside a key. Array-valued properties are intentionally returned as leaf branches; read the array branch only when its contents are needed.
-
-Use SymbolPeek for large translation, locale, manifest, and configuration JSON files instead of loading every key into context.
+Address object properties with RFC 6901 pointers such as `/checkout/errors/payment_failed`; escape `~` as `~0` and `/` as `~1`. Arrays are leaf branches. Prefer targeted branches for large locale, manifest, and configuration files.

@@ -8,6 +8,6 @@ in Git history; the release workflow publishes them as versioned, checksummed
 Use the latest-release links in the main [README](../README.md#direct-downloads)
 to download a binary without cloning or building the repository.
 
-Release packages also contain the bundled SymbolPeek agent skill. The one-line
-installers activate it automatically for Codex and Claude Code; manual archive
-users can run `symbolpeek install-skills all`.
+Release packages also contain the bundled SymbolPeek agent skill. It is never
+installed automatically — run `symbolpeek install-skills codex|claude|all` for
+the clients you use.

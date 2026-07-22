@@ -20,81 +20,230 @@ Ask for the symbol you need—not the entire file.
 
 <p>
   <a href="https://github.com/pioner92/symbolpeek-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/pioner92/symbolpeek-mcp?label=Download%20latest%20release&style=for-the-badge" alt="Download latest SymbolPeek release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="MIT license"></a>
 </p>
 
 <p>
   <a href="#quick-start">Quick start</a> ·
-  <a href="#connect-to-codex">Connect to Codex</a> ·
-  <a href="#connect-to-claude-code">Connect to Claude Code</a> ·
+  <a href="#language-support">Language support</a> ·
+  <a href="#tools">Tools</a> ·
+  <a href="#troubleshooting">Troubleshooting</a> ·
   <a href="MCP_TOOLS.md">Tool reference</a>
 </p>
 
 </div>
 
-SymbolPeek retrieves minimal source context from TS, JS, Rust, Python, Java,
-Go, and JSON. TS/JS use the TypeScript Language Service; the other languages
-use embedded Tree-sitter for reliable syntax-only operations.
+SymbolPeek is an MCP server that gives an AI coding agent a symbol-level view of
+your codebase. Instead of reading a whole file to answer "what does this
+function do" or "who calls it", the agent asks for one declaration and gets
+exactly that.
 
-For an agent this means fewer whole files pulled into the context window, and
-fewer round-trips spent locating and verifying symbols by hand.
+TypeScript and JavaScript are analyzed with the official TypeScript Compiler
+API. Rust, Python, Java, Go, and JSON use embedded Tree-sitter for syntax-level
+operations.
 
 ## Quick start
 
+**Requirements**
+
+- An MCP client. Any stdio MCP client works; [Codex and Claude
+  Code](#connect-your-client) are documented below.
+- **Node.js 20 or newer** — required for `.ts`, `.tsx`, `.js`, and `.jsx`
+  analysis. Rust, Python, Java, Go, and JSON work without it.
+
 No clone, Rust toolchain, or manual build is required.
 
-**macOS or Linux:**
+**macOS or Linux**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh | sh
-
-# Codex
-codex mcp add symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
-
-# Claude Code
-claude mcp add --transport stdio --scope user symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
 ```
 
-**Windows PowerShell:**
+**Windows PowerShell**
 
 ```powershell
 irm https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.ps1 | iex
+```
 
-# Codex
+The installer verifies the release checksum, installs the package, and then
+**prints the exact command to connect your client**. It touches nothing outside
+its own install directory — no client configuration is modified for you.
+
+<details>
+<summary>What the installer puts where</summary>
+
+| Item | macOS / Linux | Windows |
+| --- | --- | --- |
+| Package (binary + bundled TypeScript runtime) | `~/.local/share/symbolpeek` | `%LOCALAPPDATA%\SymbolPeek` |
+| `symbolpeek` and `sym` commands | linked into `~/.local/bin` | added to the user `PATH` |
+| Lifetime statistics (created on first use) | `~/.config/symbolpeek/stats.json` (Linux)<br>`~/Library/Application Support/SymbolPeek/stats.json` (macOS) | `%APPDATA%\SymbolPeek\stats.json` |
+
+That is the complete list. Connecting the MCP server and installing the
+[optional agent guidance](#optional-agent-guidance) are separate, explicit
+steps. See [Uninstall](#uninstall) to remove everything.
+
+</details>
+
+To inspect the installer before running it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh -o install-symbolpeek.sh
+less install-symbolpeek.sh
+sh install-symbolpeek.sh
+```
+
+### Connect your client
+
+The installer prints these commands with the correct absolute path already
+filled in. Use the absolute path form — it works regardless of how your client
+inherits `PATH`:
+
+```sh
+# Codex (macOS/Linux)
+codex mcp add symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
+
+# Claude Code (macOS/Linux)
+claude mcp add --transport stdio --scope user symbolpeek -- "$HOME/.local/share/symbolpeek/symbolpeek"
+```
+
+```powershell
+# Codex (Windows)
 codex mcp add symbolpeek -- "$env:LOCALAPPDATA\SymbolPeek\symbolpeek.exe"
 
-# Claude Code
+# Claude Code (Windows)
 claude mcp add --transport stdio --scope user symbolpeek -- "$env:LOCALAPPDATA\SymbolPeek\symbolpeek.exe"
 ```
 
-Restart the client. That is all: the installer verifies the downloaded binary,
-adds it to the command path, and installs agent guidance that tells Codex and
-Claude to use SymbolPeek proactively for supported code and large JSON files.
+Restart the client, then verify: `codex mcp list`, or `/mcp` inside Claude Code.
+Use `--scope project` with Claude Code to enable the server for one project only.
 
-## Why SymbolPeek?
+### Optional: agent guidance
 
-Traditional file retrieval forces an LLM to read code it does not need. A
-symbol-aware request can return exactly the relevant declaration and its
-nearby context:
+The tools work as soon as the server is connected. SymbolPeek also ships a
+short [skill](skills/symbolpeek/SKILL.md) that tells the agent to *reach for*
+those tools before opening whole files — without it the model calls them less
+often.
 
-```text
-read_symbol_context(path, "sendMessage")
+Install it only for the clients you actually use:
 
-→ sendMessage
-→ validateInput
-→ Message
-→ MAX_LENGTH
+```sh
+symbolpeek install-skills codex     # writes ~/.codex/skills/symbolpeek
+symbolpeek install-skills claude    # writes ~/.claude/skills/symbolpeek
+symbolpeek install-skills all       # both
 ```
 
-SymbolPeek is designed around four principles:
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` override those locations. Restart the
+client afterwards so it discovers the skill.
 
-- **Semantic retrieval** — symbols are discovered from an AST, not text
-  matching.
-- **Minimal context** — return only the requested symbol and explicitly
-  requested relationships.
-- **Fresh results** — every request reads the current file snapshot and
-  starts without a stale global AST cache.
-- **Extensible architecture** — the MCP layer is independent of the language
-  parser and can support future providers without language-specific MCP code.
+Try it with a prompt like:
+
+```text
+Use the symbolpeek MCP server. List the symbols in the absolute path
+/project/src/dashboard.tsx, then read_symbol_context for Dashboard.
+After that, find_references for useAuth and go_to_definition for one usage.
+```
+
+Configuration templates are checked in at
+[`config/codex-mcp.toml.example`](config/codex-mcp.toml.example) and
+[`config/claude-mcp.json.example`](config/claude-mcp.json.example).
+
+## What you get
+
+A real request against this repository's own TypeScript worker
+(`src/language/typescript/worker.js`, 1,791 lines / 65 KB):
+
+```text
+read_symbol(path: ".../src/language/typescript/worker.js",
+            symbol: "createProject.collectImports")
+```
+
+```json
+{
+  "symbol": "createProject.collectImports",
+  "kind": "function",
+  "file": ".../src/language/typescript/worker.js",
+  "lines": { "start": 713, "end": 751 },
+  "source": "function collectImports(fileName, collected, visited) {\n  ...\n}",
+  "supported": true,
+  "analysis": { "backend": "ts-compiler-api", "analysis_level": "syntax", "complete": true }
+}
+```
+
+The agent receives **2.0 KB instead of 65 KB** — the 39 lines it asked for
+rather than 1,791 lines it did not. Nested symbols are addressable by qualified
+name, so the agent never has to read the enclosing function to reach the inner
+one.
+
+## Language support
+
+Every language-aware operation, exactly as reported by `get_capabilities`:
+
+| Operation | `.ts` `.tsx` `.js` `.jsx` | `.rs` | `.py` `.java` `.go` | `.json` |
+| --- | :---: | :---: | :---: | :---: |
+| `read_symbol` | ✅ | ✅ | ✅ | ✅ |
+| `list_symbols` | ✅ | ✅ | ✅ | ✅ |
+| `search_symbols` | ✅ | ✅ | ✅ | ✅ |
+| `get_document_outline` | ✅ | ✅ | ✅ | ✅ |
+| `find_dependencies` | ✅ | ✅¹ | ✅¹ | — |
+| `read_symbol_context` | ✅ | ✅¹ | ✅¹ | — |
+| `find_implementations` | ✅ | ✅² | — | — |
+| `find_references` | ✅ | — | — | — |
+| `find_callers` | ✅ | — | — | — |
+| `find_callees` | ✅ | — | — | — |
+| `go_to_definition` | ✅ | — | — | — |
+| `get_type` | ✅ | — | — | — |
+| `get_diagnostics` | ✅ | — | — | — |
+| `get_call_hierarchy` | ✅ | — | — | — |
+| **Backend** | TypeScript Compiler API | Tree-sitter | Tree-sitter | Tree-sitter |
+| **Analysis level** | semantic | syntax | syntax | syntax |
+
+¹ Same-file only — conservative, no cross-file resolution.
+² Explicit `impl Type` and `impl Trait for Type` blocks. Alias, re-export, and
+blanket-impl resolution requires rust-analyzer and is not supported.
+
+Unsupported operations fail with an explicit error rather than returning empty
+results. `get_capabilities` returns this same matrix at runtime.
+
+## Tools
+
+### Navigation
+
+| Tool | What it answers |
+| --- | --- |
+| `read_symbol` | "Show me the exact source for this symbol." |
+| `list_symbols` | "What are the top-level symbols in this file?" |
+| `search_symbols` | "Where is this symbol defined across the workspace?" |
+| `go_to_definition` | "Where is the definition behind this usage?" |
+| `read_symbol_context` | "Give me this symbol plus its minimal local context." |
+
+### Code intelligence
+
+| Tool | What it answers |
+| --- | --- |
+| `find_references` | "Where is this symbol referenced across the project?" |
+| `find_callers` | "Which functions or methods call this symbol?" |
+| `find_callees` | "Which named targets does this symbol call, including unresolved ones?" |
+| `find_dependencies` | "Which local symbols does this symbol depend on?" |
+| `get_call_hierarchy` | "What callers and callees surround this symbol?" |
+
+### Type analysis
+
+| Tool | What it answers |
+| --- | --- |
+| `get_type` | "What is the inferred type or signature at this location?" |
+| `find_implementations` | "Which classes implement this interface or contract?" |
+| `get_document_outline` | "What is the nested declaration structure of this file?" |
+| `get_diagnostics` | "What TypeScript compiler diagnostics affect this file or symbol?" |
+
+### Discovery and statistics
+
+| Tool | What it answers |
+| --- | --- |
+| `get_statistics` | "How much source context has SymbolPeek avoided?" |
+| `get_capabilities` | "Which operations does each language support?" |
+
+Every request shape, option, and response format is documented in the
+**[MCP tool reference](MCP_TOOLS.md)**.
 
 ## Where it helps (and where it doesn't)
 
@@ -122,183 +271,197 @@ re-exports.*
 
 - Plain text, comments, small config files, or unsupported files — `grep` is faster.
 - Understanding the full control flow inside one function — just read it.
-- Very large monorepos — workspace-wide discovery and TypeScript program
-  construction have real latency; a targeted `grep` can be faster for a single
-  lookup.
+- Very large monorepos — building a TypeScript program has real latency, so a
+  targeted `grep` can win for a single lookup. Rust, Python, Java, Go, and JSON
+  requests never start Node and stay fast regardless of project size.
 
 **What makes the results trustworthy**
 
-- Parsing, source ranges, type information, and cross-file navigation come
-  from the TypeScript compiler and AST. Semantic labels such as `hook` and
-  `react_component` additionally use explicit naming and JSX conventions.
+- Parsing, source ranges, type information, and cross-file navigation come from
+  the TypeScript compiler and its AST. Semantic labels such as `hook` and
+  `react_component` are conventions applied on top of that syntax tree, based on
+  naming and JSX usage.
 - Cross-file results are only as complete as module resolution allows: with a
   valid `tsconfig.json` they use its configured source set; without one they
   cover the target file and recursively resolved static imports, exports, and
-  `require(...)` calls.
-- Compiler options come from the project `tsconfig.json`. The worker itself
-  uses the TypeScript runtime selected by `SYMBOLPEEK_TYPESCRIPT_ROOT`; the
-  prebuilt binary discovers its bundled locked runtime automatically, while
-  the source release wrapper sets it explicitly.
-- Rust, Python, Java, Go, and JSON source ranges and nesting come from Tree-sitter;
-  unsupported semantic operations fail explicitly. Every language result includes compact
-  `analysis: { backend, analysis_level, complete }` trust metadata.
+  `require(...)` calls. Compiler options come from the project `tsconfig.json`.
+- Rust, Python, Java, Go, and JSON source ranges and nesting come from
+  Tree-sitter. Every result carries compact
+  `analysis: { backend, analysis_level, complete }` trust metadata, where
+  `complete: false` means the parser recovered from a syntax error.
 
-## Capabilities at a glance
+## What gets indexed
 
-### Navigation
-
-| Tool | What it answers |
-| --- | --- |
-| `read_symbol` | “Show me the exact source for this symbol.” |
-| `list_symbols` | “What are the top-level symbols in this file?” |
-| `search_symbols` | “Where is this symbol defined across the workspace?” |
-| `go_to_definition` | “Where is the definition behind this usage?” |
-| `read_symbol_context` | “Give me this symbol plus its minimal local context.” |
-
-### Code Intelligence
-
-| Tool | What it answers |
-| --- | --- |
-| `find_references` | “Where is this symbol referenced across the project?” |
-| `find_callers` | “Which functions or methods call this symbol?” |
-| `find_callees` | “Which named targets does this symbol call, including unresolved ones?” |
-| `find_dependencies` | “Which local symbols does this symbol depend on?” |
-| `get_call_hierarchy` | “What callers and callees surround this symbol?” |
-
-### Type Analysis
-
-| Tool | What it answers |
-| --- | --- |
-| `get_type` | “What is the inferred type or signature at this location?” |
-| `find_implementations` | “Which classes implement this interface or contract?” |
-| `get_document_outline` | “What is the nested declaration structure of this file?” |
-| `get_diagnostics` | “What TypeScript compiler diagnostics affect this file or symbol?” |
-
-Flat bounded tools (`list_symbols`, `search_symbols`, references, callers,
-callees, implementations, and diagnostics) support `offset` pagination. A truncated
-page includes `next_offset`; pass it to the next request. Cross-file pages use
-page-local `files[]` tables; for compact tuple responses, the `file_idx` position
-declared by `fields` indexes that table. When a compact response includes
-`base`, join it with `files[file_idx]` to recover the absolute path; otherwise the
-table contains absolute paths. Nested outlines and call graphs remain deliberately
-bounded without offset pagination. Outline nodes use recursive tuple rows declared
-by `fields`; call hierarchy nodes and edges use tuple rows declared by
-`node_fields` and `edge_fields`.
-
-### Discovery and statistics
-
-| Tool | What it answers |
-| --- | --- |
-| `get_statistics` | “How much source context has SymbolPeek avoided?” |
-| `get_capabilities` | “Which operations and analysis levels does each language support?” |
-
-## Supported source
-
-Supported extensions:
-
-- `.ts`
-- `.tsx`
-- `.js`
-- `.jsx`
-- `.rs`
-- `.py`
-- `.java`
-- `.go`
-- `.json`
-
-The TypeScript provider detects symbols such as:
-
-- function declarations, async functions, generators, and arrow functions;
-- exported and nested functions;
-- React components and hooks;
-- classes and class methods;
-- object methods;
-- interfaces, type aliases, enums and qualified enum members, variables, and
-  constants.
+**TypeScript and JavaScript** — function declarations, async functions,
+generators, and arrow functions; exported and nested functions; React components
+and hooks; classes and class methods; object methods; interfaces, type aliases,
+enums and qualified enum members, variables, and constants.
 
 Enum members are addressed by qualified name, for example
-`Screens.PUBLISH_ACKNOWLEDGEMENT`. Symbol names are indexed; assigned string
+`Screens.PUBLISH_ACKNOWLEDGEMENT`. Symbol *names* are indexed; assigned string
 values remain literals and require text search.
 
-TypeScript and JavaScript parsing is performed by the official TypeScript
-Compiler API. It does not use regex, brace counting, Tree-sitter, SWC, or a
-hand-written parser.
-React component and hook classification follows naming and JSX conventions;
-it is a label applied on top of the compiler-derived syntax tree.
+**Rust** — functions, structs, unions, enums and variants, traits, impl blocks
+and methods, modules, constants, statics, type declarations, and macros. Impl
+methods use qualified names such as `Client.send`, and trait impl methods use
+`<Client as Transport>.send`.
 
-Rust, Python, Java, and Go use embedded Tree-sitter for `read_symbol`,
-`list_symbols`, `search_symbols`, `get_document_outline`, and conservative
-same-file dependencies/context. Rust additionally supports explicit `impl`
-discovery. Rust recognizes functions,
-structs, unions, enums and variants, traits, impl blocks and methods, modules,
-constants, statics, type declarations, and macros. The reusable
-`TreeSitterLanguage` contract keeps parsing, resolution, pagination, workspace
-search, and response formatting shared for future Kotlin, Swift, and C++ providers.
+**JSON** — object properties are indexed as RFC 6901 JSON Pointers, for example
+`/checkout/errors/payment_failed`. Array-valued properties remain single
+addressable branches instead of expanding every element, which keeps large
+locale and data files token-efficient. `.jsonc` and JSON5 are not supported.
 
-JSON object properties are indexed as RFC 6901 JSON Pointers, for example
-`/checkout/errors/payment_failed`. JSON supports `read_symbol`, `list_symbols`,
-`search_symbols`, and `get_document_outline`. Array-valued properties remain
-single addressable branches instead of expanding every array element into the
-outline, which keeps large locale and data files token-efficient. Semantic code
-operations such as references, types, dependencies, and call hierarchy are not
-applicable to JSON and remain unsupported. `.jsonc` and JSON5 are not included.
+## Using the tools
 
-## Install prebuilt binary
+Absolute file paths are the canonical, most reliable input. Relative paths first
+use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then filesystem roots supplied by a
+compatible MCP client; multi-root workspaces resolve only when exactly one root
+contains the requested path.
 
-Prebuilt release packages require no repository clone, Rust toolchain, build,
-or npm install. Each archive contains `symbolpeek`, the `sym` alias, and the
-locked TypeScript runtime. The installer also installs the SymbolPeek agent
-skill for Codex and Claude Code, so connected agents are guided to use targeted
-symbol reads before opening whole files. Install Node.js 20 or newer only when
-TS/JS analysis is needed; Rust, Python, Java, Go, and JSON support is
-self-contained.
+Supported files are parsed from their current contents on every request — there
+is no index to rebuild and no stale cache to invalidate.
 
-### macOS and Linux
+Unsupported extensions return `{ "supported": false }`. Missing files, parser
+failures, and unknown symbols are returned as MCP invalid-parameter errors.
 
-Run the installer:
+## How agents discover the tools
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh | sh
-```
+Two mechanisms nudge a model toward targeted reads:
 
-It verifies the release checksum, installs the package under
-`~/.local/share/symbolpeek`, links both commands into `~/.local/bin`, and
-installs the agent guidance under `~/.codex/skills/symbolpeek` and
-`~/.claude/skills/symbolpeek`.
-Ensure that directory is on `PATH`, then verify the installation:
+- **Server instructions, always on.** Every MCP initialization response includes
+  concise instructions to inspect outlines or search first, then retrieve only
+  the required symbol. This works with any MCP client that exposes server
+  instructions to its LLM — nothing to install.
+- **The bundled skill, opt-in.** [`symbolpeek` skill](skills/symbolpeek/SKILL.md)
+  is a stronger, always-loaded hint for Codex and Claude Code, with a trigger
+  description covering code exploration and large JSON locale/configuration
+  files. Install it with
+  [`install-skills`](#optional-agent-guidance) if you want it.
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-symbolpeek --version
-symbolpeek --help
-```
+No MCP server can force a client model to call a tool, but these mechanisms make
+the intended workflow part of the model's default context. For another agent
+that consumes neither, copy the short workflow from the bundled skill into that
+client's global agent instructions.
 
-To inspect the installer before running it:
+## Statistics
+
+The CLI reports lifetime context-avoidance statistics:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh -o install-symbolpeek.sh
-less install-symbolpeek.sh
-sh install-symbolpeek.sh
+symbolpeek stats
+symbolpeek stats --reset
 ```
 
-On macOS, release binaries are currently unsigned. If a browser-added
-quarantine flag blocks a manually downloaded binary, remove it from the
-extracted package with `xattr -dr com.apple.quarantine <package-directory>`.
+`--reset` clears lifetime totals only. Session counters belong to the running
+MCP process and are available through `get_statistics()`.
 
-### Windows
+All numbers compare SymbolPeek with a counterfactual full-source baseline:
 
-Run the PowerShell installer:
+- **requests** — successful semantic calls;
+- **files avoided** — distinct source files represented by each result, summed
+  across calls (one `find_callers` request can count several files);
+- **bytes / lines avoided** — full contents of those files minus a compact
+  serialization of the semantic result;
+- **estimated token savings** — avoided bytes at a fixed ~4 bytes/token
+  heuristic;
+- **average context reduction** — size-weighted across all requests.
+
+Treat these as directional context-reduction estimates, not exact model-token
+counts or billing data.
+
+## Configuration
+
+Prebuilt binaries detect their bundled TypeScript runtime automatically. These
+variables are for advanced setups only:
+
+| Variable | Purpose |
+| --- | --- |
+| `SYMBOLPEEK_WORKSPACE_ROOT` | Workspace root used to resolve relative source paths. |
+| `SYMBOLPEEK_ALLOW_CWD_FALLBACK` | Allow relative paths to fall back to the process working directory (default `true`). |
+| `SYMBOLPEEK_TYPESCRIPT_ROOT` | Directory containing the TypeScript runtime. |
+| `SYMBOLPEEK_NODE` | Explicit Node.js executable for the parser worker. |
+| `SYMBOLPEEK_STATS_PATH` | Override the lifetime statistics JSON path. |
+
+For a global MCP installation, do **not** set `SYMBOLPEEK_WORKSPACE_ROOT` to a
+fixed project — use absolute paths, or let the client provide filesystem roots.
+Set `SYMBOLPEEK_ALLOW_CWD_FALLBACK=false` if relative paths must never resolve
+against the server's working directory.
+
+## Troubleshooting
+
+**The client shows no SymbolPeek tools.**
+Confirm registration with `codex mcp list` or `/mcp` in Claude Code, and restart
+the client — MCP servers are discovered at startup. If registration itself
+failed, re-run the `mcp add` command using the absolute binary path.
+
+**TypeScript/JavaScript calls fail, other languages work.**
+Node.js 20+ is missing or not visible to the server process. Check with
+`node --version`; if Node is installed but not on the client's `PATH`, set
+`SYMBOLPEEK_NODE` to the absolute Node executable.
+
+**`symbolpeek: command not found` after installing on macOS/Linux.**
+`~/.local/bin` is not on your `PATH`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"   # add to your shell profile
+```
+
+The absolute path `~/.local/share/symbolpeek/symbolpeek` always works.
+
+**Windows: the command is not recognized.**
+The installer updates the user `PATH`; open a new terminal so the change is
+picked up. If `irm ... | iex` is blocked, run
+`Set-ExecutionPolicy -Scope Process RemoteSigned` first, or download the archive
+manually.
+
+**macOS blocks the binary.**
+Release binaries are currently unsigned. If a browser-added quarantine flag
+blocks a manually downloaded package, clear it:
+
+```sh
+xattr -dr com.apple.quarantine <package-directory>
+```
+
+**A relative path resolves to the wrong project.**
+Use absolute paths, or set `SYMBOLPEEK_WORKSPACE_ROOT` for a deliberately
+project-scoped launch. `SYMBOLPEEK_ALLOW_CWD_FALLBACK=false` disables working
+directory fallback entirely.
+
+**An operation returns an unsupported-operation error.**
+Check the [language support matrix](#language-support) — semantic operations are
+TypeScript/JavaScript only.
+
+Still stuck? [Open an issue](https://github.com/pioner92/symbolpeek-mcp/issues)
+with your OS, client, SymbolPeek version (`symbolpeek --version`), and the failing
+call.
+
+## Uninstall
+
+```sh
+# macOS / Linux
+rm -rf ~/.local/share/symbolpeek ~/.local/bin/symbolpeek ~/.local/bin/sym
+rm -rf ~/.config/symbolpeek "$HOME/Library/Application Support/SymbolPeek"
+```
 
 ```powershell
-irm https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.ps1 | iex
+# Windows
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\SymbolPeek", "$env:APPDATA\SymbolPeek"
 ```
 
-It verifies the checksum, installs into `%LOCALAPPDATA%\SymbolPeek`, adds that
-directory to the user `PATH`, installs the Codex and Claude Code skills, and
-prints ready-to-run client commands. Open a new terminal if another process
-does not see the updated `PATH` immediately.
+Then remove the server from your client: `codex mcp remove symbolpeek` or
+`claude mcp remove symbolpeek`. On Windows, also drop the SymbolPeek entry from
+your user `PATH`.
 
-### Direct downloads
+If you installed the optional agent guidance, remove it too:
+
+```sh
+rm -rf ~/.codex/skills/symbolpeek ~/.claude/skills/symbolpeek
+```
+
+## Direct downloads
+
+Prefer to install manually? Every package contains `symbolpeek`, the `sym`
+alias, and the locked TypeScript runtime.
 
 | Platform | Release package |
 | --- | --- |
@@ -308,193 +471,26 @@ does not see the updated `PATH` immediately.
 | macOS Intel | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-x86_64-apple-darwin.tar.gz) |
 | Windows x86-64 | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-x86_64-pc-windows-msvc.zip) |
 
-Every package has a matching `.sha256` asset. All versions and release notes
-are available on the [GitHub Releases page](https://github.com/pioner92/symbolpeek-mcp/releases).
+Every package has a matching `.sha256` asset. All versions and release notes are
+on the [GitHub Releases page](https://github.com/pioner92/symbolpeek-mcp/releases).
 
-When installing from a manually extracted archive, install the agent guidance
-once with:
+A manually extracted archive behaves exactly like an installer-placed one: run
+the binary directly, register it with your client, and optionally run
+[`install-skills`](#optional-agent-guidance).
 
-```sh
-symbolpeek install-skills all
-```
+SymbolPeek communicates over stdio when used as an MCP server. It normally does
+not print a terminal interface; an MCP client starts it and exchanges JSON-RPC
+messages through stdin/stdout.
 
-SymbolPeek communicates over stdio when used as an MCP server. It normally
-does not print a terminal interface; an MCP client starts it and exchanges
-JSON-RPC messages through stdin/stdout.
+## Documentation
 
-## CLI statistics
-
-The CLI displays lifetime context-avoidance statistics:
-
-```sh
-symbolpeek stats
-symbolpeek stats --reset
-```
-
-`--reset` resets lifetime totals only. Session counters belong to the running
-MCP process and are available through `get_statistics()`.
-
-All numbers compare SymbolPeek with a counterfactual full-source baseline:
-
-- **requests** — successful semantic calls;
-- **files avoided** — distinct source files represented by each result, summed
-  across calls (one `find_callers` request can count several files);
-- **bytes / lines avoided** — full contents of those files minus a compact
-  serialization of the semantic result; singular `file` path fields are
-  excluded from the response-size estimate, while interned `files[]` tables
-  remain included;
-- **estimated token savings** — avoided bytes at a fixed ~4 bytes/token
-  heuristic, not a specific model's tokenization;
-- **average context reduction** — size-weighted across all requests.
-
-`get_statistics` returns both session and lifetime scopes plus a `note`
-describing this basis. Treat them as directional context-reduction estimates,
-not exact model-token counts or billing data. They do not model MCP envelope
-serialization, host caching, a particular tokenizer, or whether an agent would
-have used a targeted text search instead of reading every represented file.
-
-Lifetime data is stored as human-readable JSON in the platform configuration
-directory:
-
-| Platform | Default location |
+| Document | Contents |
 | --- | --- |
-| Linux | `~/.config/symbolpeek/stats.json` or `$XDG_CONFIG_HOME/symbolpeek/stats.json` |
-| macOS | `~/Library/Application Support/SymbolPeek/stats.json` |
-| Windows | `%APPDATA%/SymbolPeek/stats.json` |
-
-Persistence failures disable on-disk updates for that run; in-memory counters
-and semantic tools continue operating normally.
-
-## Using the tools
-
-Absolute file paths are the canonical, most reliable input from an external MCP
-client. Relative paths first use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then
-filesystem roots supplied by a compatible MCP client. Multi-root workspaces are
-resolved only when exactly one root contains the requested path. Direct binary
-launches retain process-working-directory fallback; the global release wrapper
-disables that fallback so it cannot mistake the SymbolPeek installation
-directory for the project being analyzed.
-Supported files are parsed from their current contents for every request.
-
-Every tool's request shape, options, and response format is documented in the
-**[MCP tool reference](MCP_TOOLS.md)**.
-
-Unsupported extensions return `{ "supported": false }`. Missing files, parser
-failures, and unknown symbols are returned as MCP invalid-parameter errors.
-
-## Connect to Codex
-
-After installing the release package, register the executable:
-
-```sh
-codex mcp add symbolpeek -- symbolpeek
-codex mcp list
-```
-
-The one-line binary installer already installs the `symbolpeek` skill. If the
-archive was extracted manually, run `symbolpeek install-skills codex`. Restart
-Codex after registering the MCP server so it discovers both the server and the
-skill. The skill tells Codex to prefer outline/search/symbol reads for supported
-source and JSON files, while still allowing ordinary reads when full-file
-context is actually needed.
-
-If `~/.local/bin` is not on the environment inherited by Codex, use the
-absolute path `~/.local/share/symbolpeek/symbolpeek`. On Windows, use the
-absolute path to `symbolpeek.exe` from the extracted package.
-
-Try:
-
-```text
-Use the symbolpeek MCP server. List the symbols in the absolute path
-/project/src/dashboard.tsx, then read_symbol_context for Dashboard.
-After that, find_references for useAuth and go_to_definition for one usage.
-```
-
-The checked-in Codex configuration template is available at
-[`config/codex-mcp.toml.example`](config/codex-mcp.toml.example).
-
-## Connect to Claude Code
-
-Register the same stdio server at user scope:
-
-```sh
-claude mcp add \
-  --transport stdio \
-  --scope user \
-  symbolpeek -- symbolpeek
-
-claude mcp list
-claude mcp get symbolpeek
-```
-
-The one-line installer also installs the same guidance as a Claude Code skill.
-For a manually extracted archive, run `symbolpeek install-skills claude`, then
-restart Claude Code.
-
-Inside Claude Code, run `/mcp` to inspect the connection. Use
-`--scope project` when the server should be configured only for the current
-project.
-
-The checked-in Claude configuration template is available at
-[`config/claude-mcp.json.example`](config/claude-mcp.json.example).
-
-## Automatic agent guidance
-
-SymbolPeek uses two complementary discovery mechanisms:
-
-- Every MCP initialization response includes concise server instructions to
-  inspect outlines or search first, then retrieve only the required symbol.
-  This works with any MCP client that exposes server instructions to its LLM.
-- Codex and Claude Code receive the bundled
-  [`symbolpeek` skill](skills/symbolpeek/SKILL.md), whose trigger description
-  covers code exploration and large JSON locale/configuration files.
-
-No MCP server can force a client model to call a tool, but these mechanisms make
-the intended workflow part of the model's default context. For another agent
-that does not consume MCP server instructions or `SKILL.md`, copy the short
-workflow from the bundled skill into that client's global agent instructions.
-
-## Configuration
-
-Prebuilt binaries automatically detect the bundled TypeScript runtime next to
-the executable. The source-checkout release wrapper sets the same location
-explicitly. These environment variables are available for advanced setups:
-
-| Variable | Purpose |
-| --- | --- |
-| `SYMBOLPEEK_WORKSPACE_ROOT` | Optional workspace root used to resolve relative source paths. |
-| `SYMBOLPEEK_ALLOW_CWD_FALLBACK` | Allow relative paths to fall back to the process working directory (binary default `true`; source release wrapper default `false`). |
-| `SYMBOLPEEK_TYPESCRIPT_ROOT` | Directory containing the installed TypeScript runtime. |
-| `SYMBOLPEEK_NODE` | Explicit Node.js executable to launch the parser worker. |
-| `SYMBOLPEEK_STATS_PATH` | Override the lifetime statistics JSON path. |
-
-For a global MCP installation, do not set `SYMBOLPEEK_WORKSPACE_ROOT` to a
-fixed project. Use absolute paths, or let a compatible MCP client provide its
-filesystem roots. Set `SYMBOLPEEK_ALLOW_CWD_FALLBACK=false` if relative paths
-must never use the server process working directory. Set
-`SYMBOLPEEK_WORKSPACE_ROOT` only for a deliberately project-scoped launch.
-Prebuilt packages find their bundled `node_modules` automatically; source-only
-installs can set `SYMBOLPEEK_TYPESCRIPT_ROOT` explicitly.
-
-For example, when SymbolPeek is installed in one checkout and analyzes another
-project:
-
-```sh
-export SYMBOLPEEK_WORKSPACE_ROOT=/absolute/path/to/your/project
-export SYMBOLPEEK_TYPESCRIPT_ROOT=/absolute/path/to/symbolpeek
-```
-
-## Architecture & development
-
-SymbolPeek is built around a language-neutral MCP layer and a swappable
-TypeScript provider, with no database or persistent AST cache — every request
-reads the current source. The full design, request lifecycle, source layout,
-and contributor verification suite live in
-**[ARCHITECTURE.md](ARCHITECTURE.md)**.
-
-Repository checkout, source builds, tests, local packaging, and release
-instructions are intentionally kept out of this user-focused README. See
-**[CONTRIBUTING.md](CONTRIBUTING.md)** when working on SymbolPeek itself.
+| [MCP_TOOLS.md](MCP_TOOLS.md) | Every tool's request shape, options, and response format |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Internal design, provider boundary, request lifecycle |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Reporting bugs, source builds, tests, releases |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
 
 ## Roadmap
 
@@ -502,11 +498,12 @@ The current foundation is intentionally focused. Natural next capabilities
 include:
 
 - symbol-level editing and replacement;
-- deep type expansion beyond `get_type` hover signatures (fully resolved
-  nested and generic types);
+- deep type expansion beyond `get_type` hover signatures (fully resolved nested
+  and generic types);
 - JSX component trees and prop-flow analysis;
 - project indexing and incremental parsing;
-- additional language providers.
+- additional language providers (Kotlin, Swift, C++).
 
-These features can be added behind the provider boundary without coupling MCP
-logic to a particular language syntax.
+## License
+
+[MIT](LICENSE) © Alex Shumihin

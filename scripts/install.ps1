@@ -58,18 +58,22 @@ try {
 
     $Binary = Join-Path $InstallDir "symbolpeek.exe"
     & $Binary --version
-    & $Binary install-skills all
     Write-Host "Installed in: $InstallDir"
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         Write-Host "Note: install Node.js 20+ to enable TypeScript and JavaScript operations."
     }
     Write-Host ""
-    Write-Host "The agent guidance is installed. Connect the MCP server:"
+    Write-Host "Connect the MCP server to your client:"
     Write-Host "Codex:"
     Write-Host "  codex mcp add symbolpeek -- `"$Binary`""
-    Write-Host "Connect to Claude Code:"
+    Write-Host "Claude Code:"
     Write-Host "  claude mcp add --transport stdio --scope user symbolpeek -- `"$Binary`""
     Write-Host "Restart the client after adding the server."
+    Write-Host ""
+    Write-Host "Optional: install agent guidance so the client prefers targeted symbol"
+    Write-Host "reads over whole files. Only run this for clients you actually use:"
+    Write-Host "  `"$Binary`" install-skills codex"
+    Write-Host "  `"$Binary`" install-skills claude"
 } finally {
     if (Test-Path $TempDir) {
         Remove-Item -Recurse -Force $TempDir

@@ -35,7 +35,7 @@ cp "$BINARY_DIR/symbolpeek$EXE_SUFFIX" "$PACKAGE_DIR/"
 cp "$BINARY_DIR/sym$EXE_SUFFIX" "$PACKAGE_DIR/"
 cp -R "$PROJECT_ROOT/node_modules/typescript" "$PACKAGE_DIR/node_modules/"
 cp -R "$PROJECT_ROOT/skills/symbolpeek" "$PACKAGE_DIR/skills/"
-cp "$PROJECT_ROOT/README.md" "$PROJECT_ROOT/MCP_TOOLS.md" "$PACKAGE_DIR/"
+cp "$PROJECT_ROOT/README.md" "$PROJECT_ROOT/MCP_TOOLS.md" "$PROJECT_ROOT/LICENSE" "$PACKAGE_DIR/"
 
 tar -C "$DIST_DIR" -czf "$ARCHIVE" "$PACKAGE_NAME"
 if command -v sha256sum >/dev/null 2>&1; then

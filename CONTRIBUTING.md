@@ -1,8 +1,41 @@
 # Contributing to SymbolPeek
 
-This document covers repository checkout, source builds, verification, local
-release packaging, and the public release workflow. End users should install a
-prebuilt binary using the [README](README.md#quick-start).
+Bug reports, feature requests, and pull requests are all welcome. End users
+should install a prebuilt binary using the [README](README.md#quick-start) —
+this document is for working on SymbolPeek itself.
+
+## Reporting a bug
+
+Check [Troubleshooting](README.md#troubleshooting) first — most setup problems
+are covered there. If the issue is real,
+[open an issue](https://github.com/pioner92/symbolpeek-mcp/issues) with:
+
+- your OS and architecture, MCP client, and `symbolpeek --version`;
+- the language and file extension involved;
+- the exact tool call and arguments, plus the full response or error;
+- `node --version` for any TypeScript/JavaScript problem;
+- a minimal source snippet that reproduces it, when the result looks wrong.
+
+Found a security vulnerability? Follow [SECURITY.md](SECURITY.md) instead of
+opening a public issue.
+
+## Proposing a change
+
+Open an issue before starting anything large, so the design can be agreed on
+first — especially anything that touches the provider boundary described in
+[ARCHITECTURE.md](ARCHITECTURE.md#design-constraints).
+
+Before opening a pull request:
+
+1. Run the full [verification suite](#verification); it must pass clean.
+2. Add tests — a new symbol kind or navigation behavior needs a fixture and an
+   assertion, not just a manual check.
+3. Keep the MCP layer language-neutral; language-specific logic belongs in a
+   provider.
+4. Update the affected documentation: `MCP_TOOLS.md` for request/response
+   changes, `README.md` for user-visible behavior, and the bundled
+   [skill](skills/symbolpeek/SKILL.md) when the recommended workflow changes.
+5. Add a `CHANGELOG.md` entry under "Unreleased".
 
 ## Requirements
 
@@ -91,9 +124,10 @@ Before tagging a release:
 1. Update the package version in `Cargo.toml`, `Cargo.lock`, and the MCP server
    metadata in `src/server.rs`.
 2. Run the complete verification suite above.
-3. Confirm the README and bundled skill describe all user-visible changes.
-4. Commit and push the release change.
-5. Create and push an annotated `vX.Y.Z` tag.
+3. Move the `CHANGELOG.md` "Unreleased" entries under the new version heading.
+4. Confirm the README and bundled skill describe all user-visible changes.
+5. Commit and push the release change.
+6. Create and push an annotated `vX.Y.Z` tag.
 
 After the workflow completes, verify that all five archives and their matching
 `.sha256` files are present on the GitHub Releases page and that the README's

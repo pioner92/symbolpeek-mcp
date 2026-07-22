@@ -60,12 +60,15 @@ if ! "$BIN_DIR/symbolpeek" --version; then
   printf 'Installation completed, but the binary could not be executed.\n' >&2
   exit 1
 fi
-"$BIN_DIR/symbolpeek" install-skills all
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) printf 'Add this to your shell profile: export PATH="%s:$PATH"\n' "$BIN_DIR" ;;
 esac
-printf '\nThe agent guidance is installed. Connect the MCP server:\n'
+printf '\nConnect the MCP server to your client:\n'
 printf 'Codex:\n  codex mcp add symbolpeek -- %s/symbolpeek\n' "$INSTALL_DIR"
 printf 'Claude Code:\n  claude mcp add --transport stdio --scope user symbolpeek -- %s/symbolpeek\n' "$INSTALL_DIR"
 printf 'Restart the client after adding the server.\n'
+printf '\nOptional: install agent guidance so the client prefers targeted symbol\n'
+printf 'reads over whole files. Only run this for clients you actually use:\n'
+printf '  %s/symbolpeek install-skills codex\n' "$INSTALL_DIR"
+printf '  %s/symbolpeek install-skills claude\n' "$INSTALL_DIR"

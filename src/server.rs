@@ -666,7 +666,7 @@ impl SymbolPeekServer {
 
 #[tool_handler(
     name = "symbolpeek",
-    version = "0.3.1",
+    version = "0.4.0",
     instructions = "Use SymbolPeek proactively before reading whole supported source or JSON files. Start with get_document_outline/list_symbols or search_symbols, then fetch only the needed implementation with read_symbol/read_symbol_context. For JSON, address object properties with RFC 6901 pointers such as /checkout/title. Use semantic tools when supported and get_capabilities only for discovery or diagnostics. Fall back to full-file reads only when targeted retrieval is insufficient."
 )]
 impl ServerHandler for SymbolPeekServer {

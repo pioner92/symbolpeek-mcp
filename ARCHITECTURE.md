@@ -73,18 +73,20 @@ src/
         └── worker.js              official TypeScript API worker
 ```
 
-## Development
+## Design constraints
 
-Install JavaScript dependencies and run the full verification suite:
+Three rules keep the layering honest; changes that break them need a deliberate
+decision:
 
-```sh
-npm ci
-cargo fmt --all -- --check
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-cargo build --release --bin symbolpeek --bin sym
-node scripts/smoke-test.mjs target/release/symbolpeek
-```
+1. **The MCP layer stays language-neutral.** Language-specific syntax knowledge
+   belongs inside a provider, never in `server.rs` or `types.rs`.
+2. **No persistent state.** No database, background scan, or cross-request AST
+   cache — correctness on the current source outranks latency.
+3. **Unsupported means explicit.** An operation a provider cannot perform
+   returns an unsupported-operation error rather than an empty result, so a
+   caller never mistakes "cannot analyze" for "nothing found".
+
+## Testing strategy
 
 Testing is layered:
 
@@ -96,23 +98,5 @@ Testing is layered:
   invalid calls, concurrent requests, statistics, and shutdown;
 - release smoke tests exercise the actual optimized binary.
 
-## Publishing binaries
-
-`.github/workflows/release.yml` builds native release packages for Linux x64
-and ARM64, macOS Intel and Apple Silicon, and Windows x64. Every archive bundles
-the locked TypeScript npm runtime and is accompanied by a SHA-256 checksum.
-Generated files are assembled under `dist/` and uploaded to GitHub Releases;
-they are not committed to Git history.
-
-After updating the Cargo package and MCP server versions, publish from a clean
-`main` branch with a matching version tag:
-
-```sh
-git tag v0.3.0
-git push origin v0.3.0
-```
-
-The tag starts the release workflow, which runs a native binary check, performs
-the Linux release smoke test, builds all five packages, and creates or updates
-the corresponding GitHub Release. Latest-download URLs in the README remain
-stable across versions.
+Build commands, the full verification suite, local packaging, and the release
+workflow live in **[CONTRIBUTING.md](CONTRIBUTING.md)**.
