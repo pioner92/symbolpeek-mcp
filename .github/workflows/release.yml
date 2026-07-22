@@ -91,7 +91,7 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/sym.exe" $PackageDir
           Copy-Item -Recurse "node_modules/typescript" (Join-Path $PackageDir "node_modules")
           Copy-Item -Recurse "skills/symbolpeek" (Join-Path $PackageDir "skills")
-          Copy-Item "README.md", "MCP_TOOLS.md" $PackageDir
+          Copy-Item "README.md", "MCP_TOOLS.md", "LICENSE" $PackageDir
           Compress-Archive -Path $PackageDir -DestinationPath $Archive -Force
           $Hash = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
           "$Hash  $PackageName.zip" | Set-Content -NoNewline "$Archive.sha256"
