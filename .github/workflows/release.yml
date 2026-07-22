@@ -106,22 +106,77 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Compose release notes from CHANGELOG
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          # Section between "## [x.y.z]" and the next "## " heading.
+          awk -v ver="$version" '
+            index($0, "## [" ver "]") == 1 { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md >section.md
+          # Trim leading and trailing blank lines.
+          awk 'NF {p=1} p' section.md |
+            awk '{l[NR]=$0} END {last=NR; while (last>0 && l[last] ~ /^[[:space:]]*$/) last--; for (i=1; i<=last; i++) print l[i]}' \
+            >release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG section for $version; falling back to generated notes." >&2
+            exit 0
+          fi
+          previous_tag=$(git describe --tags --abbrev=0 "$RELEASE_TAG^" 2>/dev/null || true)
+          {
+            echo
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://raw.githubusercontent.com/$REPOSITORY/main/scripts/install.sh | sh"
+            echo '```'
+            echo
+            echo '```powershell'
+            echo "irm https://raw.githubusercontent.com/$REPOSITORY/main/scripts/install.ps1 | iex"
+            echo '```'
+            echo
+            echo "Then connect the server to your client — the installer prints the exact command."
+            echo "See the [README](https://github.com/$REPOSITORY#quick-start) for requirements and troubleshooting."
+            if [ -n "$previous_tag" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/$REPOSITORY/compare/$previous_tag...$RELEASE_TAG"
+            fi
+          } >>release-notes.md
       - name: Create release and upload binaries
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* --clobber
+          # Only packaged artifacts — the checkout also puts dist/README.md here.
+          assets=(dist/symbolpeek-*)
+          if [ -s release-notes.md ]; then
+            notes=(--notes-file release-notes.md)
           else
-            gh release create "$RELEASE_TAG" dist/* \
+            notes=(--generate-notes)
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            if [ -s release-notes.md ]; then
+              gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+            fi
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --verify-tag \
               --title "$RELEASE_TAG" \
-              --generate-notes
+              "${notes[@]}"
           fi

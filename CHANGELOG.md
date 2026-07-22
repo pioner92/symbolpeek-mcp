@@ -3,6 +3,14 @@
 All notable changes to SymbolPeek are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- GitHub Release notes are now composed from the matching `CHANGELOG.md`
+  section plus install instructions, instead of the commit-derived
+  `--generate-notes` output.
+
 ## [0.4.0] — 2026-07-22
 
 ### Changed
