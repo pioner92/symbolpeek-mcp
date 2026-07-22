@@ -18,13 +18,19 @@ await access(binary, constants.X_OK);
 await access(fixture, constants.R_OK);
 await rm(statisticsPath, { force: true });
 
+const childEnvironment = {
+  ...process.env,
+  SYMBOLPEEK_STATS_PATH: statisticsPath,
+};
+if (process.env.SYMBOLPEEK_SMOKE_USE_BUNDLED_RUNTIME === "1") {
+  delete childEnvironment.SYMBOLPEEK_TYPESCRIPT_ROOT;
+} else {
+  childEnvironment.SYMBOLPEEK_TYPESCRIPT_ROOT = projectRoot;
+}
+
 const child = spawn(binary, [], {
   cwd: projectRoot,
-  env: {
-    ...process.env,
-    SYMBOLPEEK_TYPESCRIPT_ROOT: projectRoot,
-    SYMBOLPEEK_STATS_PATH: statisticsPath,
-  },
+  env: childEnvironment,
   stdio: ["pipe", "pipe", "pipe"],
 });
 

@@ -28,6 +28,7 @@ pub enum SymbolKind {
     Impl,
     Macro,
     Static,
+    JsonProperty,
     Unknown,
 }
 
@@ -350,7 +351,7 @@ pub struct SymbolRequest {
         description = "Exact source file; absolute or workspace/MCP-root/cwd-relative; no module/dir/index lookup."
     )]
     pub path: String,
-    #[schemars(description = "Symbol; nested: Component.render")]
+    #[schemars(description = "Symbol; nested code: Component.render; JSON: /checkout/title")]
     pub symbol: String,
 }
 

@@ -128,6 +128,23 @@ fn call(name: &str, id: u64, arguments: &Value) -> Value {
     })
 }
 
+#[test]
+fn release_commands_report_the_package_version() {
+    for binary in [env!("CARGO_BIN_EXE_symbolpeek"), env!("CARGO_BIN_EXE_sym")] {
+        let output = Command::new(binary)
+            .arg("--version")
+            .output()
+            .expect("release command should start");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .expect("version output should be UTF-8")
+                .trim(),
+            format!("symbolpeek {}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
+
 fn assert_tool_argument_error(response: &Value, expected: &str) {
     assert_eq!(response["result"]["isError"], true);
     assert!(response["result"]["content"]
@@ -312,6 +329,14 @@ fn rust_fixture_path() -> String {
     )
 }
 
+fn json_fixture_path() -> String {
+    format!("{}/tests/fixtures/json/en.json", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn json_workspace_path() -> String {
+    format!("{}/tests/fixtures/json", env!("CARGO_MANIFEST_DIR"))
+}
+
 fn assert_exact_path_schema_descriptions(tools: &[Value]) {
     for name in [
         "read_symbol",
@@ -355,14 +380,20 @@ fn assert_language_support_markers(tools: &[Value]) {
         "list_symbols",
         "search_symbols",
         "get_document_outline",
-        "find_dependencies",
-        "read_symbol_context",
     ] {
         let description = tools
             .iter()
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("syntax tool should publish a description");
+        assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json]"));
+    }
+    for name in ["find_dependencies", "read_symbol_context"] {
+        let description = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool["description"].as_str())
+            .expect("context tool should publish a description");
         assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go]"));
     }
     let implementations = tools
@@ -493,6 +524,57 @@ fn starts_initializes_registers_tools_and_shuts_down() {
     assert!(capabilities["languages"]["rust"].is_array());
     assert_eq!(capabilities["languages"]["rust"][0], json!([".rs"]));
     assert_eq!(capabilities["languages"]["rust"][1], "tree-sitter");
+    assert_eq!(capabilities["languages"]["json"][0], json!([".json"]));
+    assert_eq!(capabilities["languages"]["json"][1], "tree-sitter");
+
+    client.shutdown();
+}
+
+#[test]
+fn serves_json_properties_through_the_llm_facing_mcp_contract() {
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+
+    client.send(&call(
+        "read_symbol",
+        180,
+        &json!({
+            "path": json_fixture_path(),
+            "symbol": "/checkout/errors/payment_failed"
+        }),
+    ));
+    let read = client.receive();
+    let read = &read["result"]["structuredContent"];
+    assert_eq!(read["symbol"], "/checkout/errors/payment_failed");
+    assert_eq!(read["kind"], "json_property");
+    assert_eq!(read["source"], r#""payment_failed": "Payment failed""#);
+    assert_eq!(read["analysis"]["backend"], "tree-sitter");
+
+    client.send(&call(
+        "get_document_outline",
+        181,
+        &json!({"path": json_fixture_path()}),
+    ));
+    let outline = client.receive();
+    let outline = &outline["result"]["structuredContent"];
+    assert!(outline_contains(&outline["symbols"], "payment_failed"));
+
+    client.send(&call(
+        "search_symbols",
+        182,
+        &json!({
+            "path": json_workspace_path(),
+            "query": "payment_failed",
+            "kind": "json_property"
+        }),
+    ));
+    let search = client.receive();
+    let search = &search["result"]["structuredContent"];
+    assert!(search["symbols"].as_array().is_some_and(|symbols| {
+        symbols.iter().any(|symbol| {
+            symbol[1] == "/checkout/errors/payment_failed" && symbol[2] == "json_property"
+        })
+    }));
 
     client.shutdown();
 }

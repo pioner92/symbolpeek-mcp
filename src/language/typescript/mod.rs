@@ -465,8 +465,47 @@ fn run_worker_impl(
 fn runtime_root() -> std::path::PathBuf {
     std::env::var_os("SYMBOLPEEK_TYPESCRIPT_ROOT")
         .map(std::path::PathBuf::from)
+        .or_else(bundled_runtime_root)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn bundled_runtime_root() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    runtime_root_near(&executable)
+}
+
+fn runtime_root_near(executable: &Path) -> Option<std::path::PathBuf> {
+    let parent = executable.parent()?;
+    [Some(parent), parent.parent()]
+        .into_iter()
+        .flatten()
+        .find(|candidate| {
+            candidate
+                .join("node_modules/typescript/package.json")
+                .is_file()
+        })
+        .map(Path::to_path_buf)
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::runtime_root_near;
+
+    #[test]
+    fn discovers_a_bundled_typescript_runtime_beside_the_binary() {
+        let root =
+            std::env::temp_dir().join(format!("symbolpeek-bundled-runtime-{}", std::process::id()));
+        let executable = root.join("bin/symbolpeek");
+        std::fs::create_dir_all(root.join("node_modules/typescript"))
+            .expect("runtime directory should be creatable");
+        std::fs::write(root.join("node_modules/typescript/package.json"), "{}")
+            .expect("runtime marker should be writable");
+
+        assert_eq!(runtime_root_near(&executable), Some(root.clone()));
+
+        std::fs::remove_dir_all(root).expect("runtime fixture should be removable");
+    }
 }
 
 struct ParsedTypeScriptFile {

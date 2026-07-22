@@ -259,7 +259,7 @@ pub fn is_supported(path: &Path) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.as_str(),
-                "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "java" | "go"
+                "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "java" | "go" | "json"
             )
         })
 }

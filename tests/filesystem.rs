@@ -60,6 +60,7 @@ fn distinguishes_unsupported_and_missing_files() {
     ));
     assert!(!is_supported(&unsupported));
     assert!(is_supported(&directory.join("lib.rs")));
+    assert!(is_supported(&directory.join("locales.json")));
 
     fs::remove_dir_all(directory).expect("test directory should be removable");
 }

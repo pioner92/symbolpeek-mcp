@@ -8,11 +8,11 @@ Absolute file paths are canonical and safest when used from an external MCP
 client. Relative paths first use an explicit `SYMBOLPEEK_WORKSPACE_ROOT`, then
 filesystem roots supplied by a compatible MCP client. With multiple roots,
 SymbolPeek accepts a relative path only when exactly one root contains it.
-Direct binary launches can fall back to the process working directory; the
-global release wrapper disables that fallback to avoid treating the SymbolPeek
-installation directory as the analyzed project.
+Direct binary launches can fall back to the process working directory. Set
+`SYMBOLPEEK_ALLOW_CWD_FALLBACK=false` when a global installation should require
+absolute paths, an explicit workspace root, or MCP client roots.
 File-based tools require an exact existing `.ts`, `.tsx`, `.js`, `.jsx`, `.rs`,
-`.py`, `.java`, or `.go`
+`.py`, `.java`, `.go`, or `.json`
 source-file path. Their `path` parameter is not a TypeScript module specifier:
 module aliases, directory imports, implicit extensions, and implicit index files
 are not resolved. `search_symbols` is the exception: its `path` is an exact
@@ -20,12 +20,14 @@ existing workspace directory. Supported files are parsed from their current
 contents for every request.
 
 In MCP `tools/list`, language-aware descriptions begin with a compact extension
-marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go]`.
+marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json]`.
 
 Rust, Python, Java, and Go support syntax-only symbol reads/lists/search/outlines
 plus same-file dependencies/context through Tree-sitter. Rust also supports
-explicit-syntax `find_implementations`. Other semantic operations return an
-explicit unsupported-operation error. Every
+explicit-syntax `find_implementations`. JSON object properties support
+reads/lists/search/outlines and use RFC 6901 JSON Pointers such as
+`/checkout/errors/payment_failed`; arrays remain unexpanded leaf branches.
+Other semantic operations return an explicit unsupported-operation error. Every
 supported language operation returns compact trust metadata:
 
 ```json
@@ -57,6 +59,10 @@ an entirely missing parent symbol.
 Rust impl methods use qualified names such as `Client.send`; trait impl methods
 use `<Client as Transport>.send`. Attached doc comments and attributes are
 included in the returned declaration source.
+JSON properties use RFC 6901 pointers such as
+`/checkout/errors/payment_failed`; `~` and `/` inside keys are escaped as
+`~0` and `~1`. A unique bare key can also resolve, while duplicate keys require
+the full pointer.
 
 ## `list_symbols`
 
@@ -220,7 +226,7 @@ files.
 The optional `kind` filter accepts the same kinds returned by the
 other tools, such as `function`, `react_component`, `hook`, `class`,
 `interface`, `type`, `enum`, `enum_member`, `struct`, `trait`, `module`,
-`impl`, `macro`, and `static`. Results use compact `symbols`
+`impl`, `macro`, `static`, and `json_property`. Results use compact `symbols`
 tuples with `fields` equal to
 `["file_idx", "name", "kind", "start_line", "end_line", "start_column", "end_column"]`.
 The integer `file_idx` position indexes `files[]`. The default limit is 200, the

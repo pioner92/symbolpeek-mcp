@@ -19,6 +19,10 @@ pub async fn run() -> Result<()> {
         print_help();
         return Ok(());
     }
+    if matches!(command.as_deref(), Some("--version" | "-V")) {
+        println!("symbolpeek {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     let service = crate::server::SymbolPeekServer::new()
         .serve(stdio())
@@ -29,6 +33,6 @@ pub async fn run() -> Result<()> {
 
 fn print_help() {
     println!(
-        "SymbolPeek\n\nUsage:\n  symbolpeek              Start the MCP server\n  symbolpeek stats        Show lifetime statistics\n  symbolpeek stats --reset\n\nAlias:\n  sym                     Equivalent short command name\n\nThe MCP server communicates over stdio."
+        "SymbolPeek\n\nUsage:\n  symbolpeek              Start the MCP server\n  symbolpeek stats        Show lifetime statistics\n  symbolpeek stats --reset\n  symbolpeek --version\n\nAlias:\n  sym                     Equivalent short command name\n\nThe MCP server communicates over stdio."
     );
 }

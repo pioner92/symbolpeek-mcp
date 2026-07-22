@@ -126,7 +126,7 @@ fn rejects_duplicate_and_empty_provider_registrations() {
 #[test]
 fn default_registry_owns_all_supported_extensions() {
     let registry = LanguageRegistry::with_defaults();
-    for extension in ["ts", "tsx", "js", "jsx", "rs", "py", "java", "go"] {
+    for extension in ["ts", "tsx", "js", "jsx", "rs", "py", "java", "go", "json"] {
         assert!(registry
             .adapter_for(Path::new(&format!("file.{extension}")))
             .is_some());

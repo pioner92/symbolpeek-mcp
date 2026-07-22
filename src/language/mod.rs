@@ -1,5 +1,6 @@
 pub mod go;
 pub mod java;
+pub mod json;
 pub mod python;
 pub mod rust;
 pub mod tree_sitter;
@@ -333,6 +334,7 @@ impl LanguageRegistry {
                 Box::new(python::PythonAdapter::new()),
                 Box::new(java::JavaAdapter::new()),
                 Box::new(go::GoAdapter::new()),
+                Box::new(json::JsonAdapter::new()),
             ],
         }
     }

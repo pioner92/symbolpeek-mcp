@@ -125,11 +125,11 @@ impl SyntaxIndex {
             [] => {}
         }
 
-        if !symbol.contains('.') {
+        if !symbol.starts_with('/') {
             let matches = self
                 .definitions
                 .iter()
-                .filter(|definition| leaf_name(&definition.name) == symbol)
+                .filter(|definition| definition.display_name == symbol)
                 .collect::<Vec<_>>();
             return match matches.as_slice() {
                 [definition] => Resolution::Found(definition),
@@ -153,7 +153,7 @@ impl SyntaxIndex {
                 candidates: candidates.join(", "),
             }),
             Resolution::NotFound => {
-                if let Some((parent, member)) = symbol.rsplit_once('.') {
+                if let Some((parent, member)) = split_parent_member(symbol) {
                     if self.definitions.iter().any(|item| item.name == parent) {
                         return Err(SymbolPeekError::SymbolMemberNotFound {
                             path: file.path.clone(),
@@ -661,7 +661,8 @@ fn search_workspace<L: TreeSitterLanguage>(
         let index = parse_index::<L>(&file)?;
         complete &= index.complete;
         for definition in index.definitions {
-            if definition.name.to_lowercase().contains(&query)
+            if (definition.name.to_lowercase().contains(&query)
+                || definition.display_name.to_lowercase().contains(&query))
                 && request.kind.is_none_or(|kind| definition.kind == kind)
             {
                 matches.push((path.clone(), definition));
@@ -809,6 +810,14 @@ fn point_for_byte(source: &str, byte: usize) -> (usize, usize) {
 
 fn leaf_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, leaf)| leaf)
+}
+
+fn split_parent_member(name: &str) -> Option<(&str, &str)> {
+    if name.starts_with('/') {
+        let (parent, member) = name.rsplit_once('/')?;
+        return (!parent.is_empty()).then_some((parent, member));
+    }
+    name.rsplit_once('.')
 }
 
 fn ambiguity_labels(definitions: Vec<&SyntaxDefinition>) -> Vec<String> {

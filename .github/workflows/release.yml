@@ -1,0 +1,118 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            exe_suffix: ""
+            archive: tar
+            asset_suffix: tar.gz
+            smoke: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            exe_suffix: ""
+            archive: tar
+            asset_suffix: tar.gz
+            smoke: false
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            exe_suffix: ""
+            archive: tar
+            asset_suffix: tar.gz
+            smoke: false
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            exe_suffix: ""
+            archive: tar
+            asset_suffix: tar.gz
+            smoke: false
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            exe_suffix: ".exe"
+            archive: zip
+            asset_suffix: zip
+            smoke: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Install bundled TypeScript runtime
+        run: npm ci --omit=dev
+      - name: Build release binaries
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin symbolpeek --bin sym
+      - name: Verify binary version
+        shell: bash
+        run: target/${{ matrix.target }}/release/symbolpeek${{ matrix.exe_suffix }} --version
+      - name: Run release smoke test
+        if: matrix.smoke
+        run: node scripts/smoke-test.mjs target/${{ matrix.target }}/release/symbolpeek
+      - name: Package Unix release
+        if: matrix.archive == 'tar'
+        run: sh scripts/package-release.sh ${{ matrix.target }} ${{ matrix.exe_suffix }}
+      - name: Verify bundled runtime from release archive
+        if: matrix.smoke
+        run: sh scripts/verify-release-package.sh ${{ matrix.target }}
+      - name: Package Windows release
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $PackageName = "symbolpeek-${{ matrix.target }}"
+          $PackageDir = Join-Path "dist" $PackageName
+          $Archive = Join-Path "dist" "$PackageName.zip"
+          New-Item -ItemType Directory -Force (Join-Path $PackageDir "node_modules") | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/symbolpeek.exe" $PackageDir
+          Copy-Item "target/${{ matrix.target }}/release/sym.exe" $PackageDir
+          Copy-Item -Recurse "node_modules/typescript" (Join-Path $PackageDir "node_modules")
+          Copy-Item "README.md", "MCP_TOOLS.md" $PackageDir
+          Compress-Archive -Path $PackageDir -DestinationPath $Archive -Force
+          $Hash = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
+          "$Hash  $PackageName.zip" | Set-Content -NoNewline "$Archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/symbolpeek-${{ matrix.target }}.${{ matrix.asset_suffix }}*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Create release and upload binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --verify-tag \
+              --title "SymbolPeek $RELEASE_TAG" \
+              --generate-notes
+          fi

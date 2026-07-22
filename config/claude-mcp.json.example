@@ -2,10 +2,8 @@
   "mcpServers": {
     "symbolpeek": {
       "type": "stdio",
-      "command": "sh",
-      "args": [
-        "/ABSOLUTE/PATH/TO/symbolpeek/scripts/run-release.sh"
-      ]
+      "command": "/HOME/USER/.local/bin/symbolpeek",
+      "args": []
     }
   }
 }

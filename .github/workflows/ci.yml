@@ -18,7 +18,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - run: npm ci
+      - run: sh -n scripts/install.sh scripts/package-release.sh scripts/verify-release-package.sh scripts/build-release.sh scripts/run-release.sh
       - run: cargo fmt --all -- --check
       - run: cargo test --all-targets
       - run: cargo clippy --all-targets --all-features -- -D warnings
-

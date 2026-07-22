@@ -14,11 +14,16 @@ Ask for the symbol you need—not the entire file.
   <code>.rs</code>&nbsp;&nbsp;
   <code>.py</code>&nbsp;&nbsp;
   <code>.java</code>&nbsp;&nbsp;
-  <code>.go</code>
+  <code>.go</code>&nbsp;&nbsp;
+  <code>.json</code>
 </p>
 
 <p>
-  <a href="#quick-start">Quick start</a> ·
+  <a href="https://github.com/pioner92/symbolpeek-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/pioner92/symbolpeek-mcp?label=Download%20latest%20release&style=for-the-badge" alt="Download latest SymbolPeek release"></a>
+</p>
+
+<p>
+  <a href="#install-prebuilt-binary">Install</a> ·
   <a href="#connect-to-codex">Connect to Codex</a> ·
   <a href="#connect-to-claude-code">Connect to Claude Code</a> ·
   <a href="MCP_TOOLS.md">Tool reference</a>
@@ -27,8 +32,8 @@ Ask for the symbol you need—not the entire file.
 </div>
 
 SymbolPeek retrieves minimal source context from TS, JS, Rust, Python, Java,
-and Go. TS/JS use the TypeScript Language Service; the other languages use
-embedded Tree-sitter for reliable syntax-only operations.
+Go, and JSON. TS/JS use the TypeScript Language Service; the other languages
+use embedded Tree-sitter for reliable syntax-only operations.
 
 For an agent this means fewer whole files pulled into the context window, and
 fewer round-trips spent locating and verifying symbols by hand.
@@ -83,7 +88,7 @@ re-exports.*
 
 **Where an agent should still use ordinary tools**
 
-- Plain text, comments, config, or unsupported files — `grep` is faster.
+- Plain text, comments, small config files, or unsupported files — `grep` is faster.
 - Understanding the full control flow inside one function — just read it.
 - Very large monorepos — workspace-wide discovery and TypeScript program
   construction have real latency; a targeted `grep` can be faster for a single
@@ -100,8 +105,9 @@ re-exports.*
   `require(...)` calls.
 - Compiler options come from the project `tsconfig.json`. The worker itself
   uses the TypeScript runtime selected by `SYMBOLPEEK_TYPESCRIPT_ROOT`; the
-  release wrapper points this at SymbolPeek's locked runtime.
-- Rust, Python, Java, and Go source ranges and nesting come from Tree-sitter;
+  prebuilt binary discovers its bundled locked runtime automatically, while
+  the source release wrapper sets it explicitly.
+- Rust, Python, Java, Go, and JSON source ranges and nesting come from Tree-sitter;
   unsupported semantic operations fail explicitly. Every language result includes compact
   `analysis: { backend, analysis_level, complete }` trust metadata.
 
@@ -166,6 +172,7 @@ Supported extensions:
 - `.py`
 - `.java`
 - `.go`
+- `.json`
 
 The TypeScript provider detects symbols such as:
 
@@ -196,7 +203,82 @@ constants, statics, type declarations, and macros. The reusable
 `TreeSitterLanguage` contract keeps parsing, resolution, pagination, workspace
 search, and response formatting shared for future Kotlin, Swift, and C++ providers.
 
-## Quick start
+JSON object properties are indexed as RFC 6901 JSON Pointers, for example
+`/checkout/errors/payment_failed`. JSON supports `read_symbol`, `list_symbols`,
+`search_symbols`, and `get_document_outline`. Array-valued properties remain
+single addressable branches instead of expanding every array element into the
+outline, which keeps large locale and data files token-efficient. Semantic code
+operations such as references, types, dependencies, and call hierarchy are not
+applicable to JSON and remain unsupported. `.jsonc` and JSON5 are not included.
+
+## Install prebuilt binary
+
+Prebuilt release packages require no repository clone, Rust toolchain, build,
+or npm install. Each archive contains `symbolpeek`, the `sym` alias, and the
+locked TypeScript runtime. Install Node.js 20 or newer only when TS/JS analysis
+is needed; Rust, Python, Java, Go, and JSON support is self-contained.
+
+### macOS and Linux
+
+Run the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh | sh
+```
+
+It verifies the release checksum, installs the package under
+`~/.local/share/symbolpeek`, and links both commands into `~/.local/bin`.
+Ensure that directory is on `PATH`, then verify the installation:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+symbolpeek --version
+symbolpeek --help
+```
+
+To inspect the installer before running it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.sh -o install-symbolpeek.sh
+less install-symbolpeek.sh
+sh install-symbolpeek.sh
+```
+
+On macOS, release binaries are currently unsigned. If a browser-added
+quarantine flag blocks a manually downloaded binary, remove it from the
+extracted package with `xattr -dr com.apple.quarantine <package-directory>`.
+
+### Windows
+
+Run the PowerShell installer:
+
+```powershell
+irm https://raw.githubusercontent.com/pioner92/symbolpeek-mcp/main/scripts/install.ps1 | iex
+```
+
+It verifies the checksum, installs into `%LOCALAPPDATA%\SymbolPeek`, adds that
+directory to the user `PATH`, and prints ready-to-run Codex and Claude Code
+commands. Open a new terminal if another process does not see the updated
+`PATH` immediately.
+
+### Direct downloads
+
+| Platform | Release package |
+| --- | --- |
+| Linux x86-64 | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-x86_64-unknown-linux-gnu.tar.gz) |
+| Linux ARM64 | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-aarch64-unknown-linux-gnu.tar.gz) |
+| macOS Apple Silicon | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-aarch64-apple-darwin.tar.gz) |
+| macOS Intel | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-x86_64-apple-darwin.tar.gz) |
+| Windows x86-64 | [Download](https://github.com/pioner92/symbolpeek-mcp/releases/latest/download/symbolpeek-x86_64-pc-windows-msvc.zip) |
+
+Every package has a matching `.sha256` asset. All versions and release notes
+are available on the [GitHub Releases page](https://github.com/pioner92/symbolpeek-mcp/releases).
+
+SymbolPeek communicates over stdio when used as an MCP server. It normally
+does not print a terminal interface; an MCP client starts it and exchanges
+JSON-RPC messages through stdin/stdout.
+
+## Build from source (contributors)
 
 Requirements:
 
@@ -212,12 +294,13 @@ node scripts/smoke-test.mjs target/release/symbolpeek
 node scripts/benchmark-latency.mjs target/release/symbolpeek 1,10,50
 ```
 
-`scripts/build-release.sh` installs the locked npm dependencies and builds both
-release executables.
+`scripts/build-release.sh` installs the locked npm dependencies, builds both
+release executables, and creates a checksummed distributable archive under
+`dist/` for the current platform.
 
 The latency script reports cold/warm p50, p95, and max for sequential batches.
 Its Tree-sitter phase deliberately uses an invalid Node path, so it also verifies
-that Rust/Python/Java/Go-only searches never start Node.
+that Rust/Python/Java/Go/JSON-only searches never start Node.
 
 The release build creates two equivalent executables:
 
@@ -226,35 +309,15 @@ target/release/symbolpeek   canonical command
 target/release/sym          convenient short alias
 ```
 
-SymbolPeek communicates over stdio when used as an MCP server. It normally
-does not print a terminal interface; an MCP client starts it and exchanges
-JSON-RPC messages through stdin/stdout.
-
-## Install command aliases globally
-
-On macOS or Linux, install the release binaries into a directory on your
-`PATH`:
-
-```sh
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/target/release/symbolpeek" ~/.local/bin/symbolpeek
-ln -sf "$(pwd)/target/release/sym" ~/.local/bin/sym
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add the `export PATH=...` line to your shell profile so it is available in
-future terminals.
-
-The same two Rust binaries are installed by:
+The Rust binaries alone can also be installed by:
 
 ```sh
 cargo install --path .
 ```
 
-The `stats` command and Tree-sitter languages are self-contained. TS/JS
-operations additionally need the npm TypeScript runtime: use `scripts/run-release.sh`, or set
-`SYMBOLPEEK_TYPESCRIPT_ROOT` to a SymbolPeek checkout where `npm ci` has been
-run. `cargo install` does not install that JavaScript dependency.
+This source-only `cargo install` does not include the TypeScript runtime. For
+TS/JS operations, use `scripts/run-release.sh` from a checkout where `npm ci`
+has run, or install a prebuilt release package.
 
 Use `symbolpeek` in documentation and automation. Use `sym` when you want a
 shorter command:
@@ -328,16 +391,16 @@ failures, and unknown symbols are returned as MCP invalid-parameter errors.
 
 ## Connect to Codex
 
-Build SymbolPeek first, then register the release wrapper:
+After installing the release package, register the executable:
 
 ```sh
-PROJECT_ROOT="$(pwd)"
-
-codex mcp add symbolpeek -- \
-  sh "$PROJECT_ROOT/scripts/run-release.sh"
-
+codex mcp add symbolpeek -- symbolpeek
 codex mcp list
 ```
+
+If `~/.local/bin` is not on the environment inherited by Codex, use the
+absolute path `~/.local/share/symbolpeek/symbolpeek`. On Windows, use the
+absolute path to `symbolpeek.exe` from the extracted package.
 
 Restart Codex and try:
 
@@ -355,12 +418,10 @@ The checked-in Codex configuration template is available at
 Register the same stdio server at user scope:
 
 ```sh
-PROJECT_ROOT="$(pwd)"
-
 claude mcp add \
   --transport stdio \
   --scope user \
-  symbolpeek -- sh "$PROJECT_ROOT/scripts/run-release.sh"
+  symbolpeek -- symbolpeek
 
 claude mcp list
 claude mcp get symbolpeek
@@ -375,24 +436,25 @@ The checked-in Claude configuration template is available at
 
 ## Configuration
 
-The release wrapper sets the TypeScript runtime root automatically. These
-environment variables are available for advanced setups:
+Prebuilt binaries automatically detect the bundled TypeScript runtime next to
+the executable. The source-checkout release wrapper sets the same location
+explicitly. These environment variables are available for advanced setups:
 
 | Variable | Purpose |
 | --- | --- |
 | `SYMBOLPEEK_WORKSPACE_ROOT` | Optional workspace root used to resolve relative source paths. |
-| `SYMBOLPEEK_ALLOW_CWD_FALLBACK` | Allow relative paths to fall back to the process working directory (default `true`; release wrapper default `false`). |
+| `SYMBOLPEEK_ALLOW_CWD_FALLBACK` | Allow relative paths to fall back to the process working directory (binary default `true`; source release wrapper default `false`). |
 | `SYMBOLPEEK_TYPESCRIPT_ROOT` | Directory containing the installed TypeScript runtime. |
 | `SYMBOLPEEK_NODE` | Explicit Node.js executable to launch the parser worker. |
 | `SYMBOLPEEK_STATS_PATH` | Override the lifetime statistics JSON path. |
 
 For a global MCP installation, do not set `SYMBOLPEEK_WORKSPACE_ROOT` to a
 fixed project. Use absolute paths, or let a compatible MCP client provide its
-filesystem roots. The release wrapper deliberately disables cwd fallback so a
-relative path never resolves against the SymbolPeek checkout by accident. Set
+filesystem roots. Set `SYMBOLPEEK_ALLOW_CWD_FALLBACK=false` if relative paths
+must never use the server process working directory. Set
 `SYMBOLPEEK_WORKSPACE_ROOT` only for a deliberately project-scoped launch.
-Set `SYMBOLPEEK_TYPESCRIPT_ROOT` separately to the directory containing the
-SymbolPeek `node_modules` runtime.
+Prebuilt packages find their bundled `node_modules` automatically; source-only
+installs can set `SYMBOLPEEK_TYPESCRIPT_ROOT` explicitly.
 
 For example, when SymbolPeek is installed in one checkout and analyzes another
 project:

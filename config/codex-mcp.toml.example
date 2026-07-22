@@ -1,6 +1,5 @@
-# Replace /ABSOLUTE/PATH/TO/symbolpeek with this repository's absolute path.
+# Replace this path if SymbolPeek was installed elsewhere.
 
 [mcp_servers.symbolpeek]
-command = "sh"
-args = ["/ABSOLUTE/PATH/TO/symbolpeek/scripts/run-release.sh"]
+command = "/HOME/USER/.local/bin/symbolpeek"
 startup_timeout_ms = 20_000

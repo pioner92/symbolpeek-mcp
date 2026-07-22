@@ -1,0 +1,11 @@
+{
+  "checkout": {
+    "title": "Checkout",
+    "errors": {
+      "payment_failed": "Payment failed"
+    }
+  },
+  "profile": {
+    "title": "Profile"
+  }
+}
