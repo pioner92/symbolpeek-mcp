@@ -24,6 +24,11 @@ All notable changes to SymbolPeek are documented here. This project follows
   language was accepted through the MCP entry point and refused through the
   public API. The boundary now derives its list from the registry, and a test
   asserts the two agree.
+- The `[.ts/.tsx/...]` marker on each tool description — the only place an agent
+  learns which files a tool accepts — is hand-written and was a third copy of
+  the same set. It now has a test that derives the expectation from the
+  registry, which immediately caught `.markdown` being supported but never
+  advertised.
 - **Python definitions guarded by control flow were missing entirely.** A
   function or class inside `if`, `try`, `with`, or a loop was absent from
   `get_document_outline` and unreachable by `read_symbol`, so the standard

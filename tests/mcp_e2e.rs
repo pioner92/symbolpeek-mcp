@@ -393,7 +393,9 @@ fn assert_language_support_markers(tools: &[Value]) {
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("syntax tool should publish a description");
-        assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md]"));
+        assert!(
+            description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md/.markdown]")
+        );
     }
     for name in ["find_dependencies", "read_symbol_context"] {
         let description = tools
@@ -1554,5 +1556,77 @@ fn malformed_json_does_not_leave_a_server_process_running() {
     assert!(
         status.code().is_some(),
         "server should report a process exit"
+    );
+}
+
+/// The `[.ts/.tsx/...]` prefix on a tool description is the only place an agent
+/// learns which files a tool accepts, and it is hand-written in `server.rs` —
+/// a third copy of the supported-extension set. Asserting it against a literal
+/// only catches someone editing the literal; a language added to the registry
+/// and forgotten here would drift silently. This derives the expectation from
+/// the registry instead.
+#[test]
+fn published_extension_markers_match_the_registry() {
+    use std::collections::BTreeSet;
+    use symbolpeek::{language::LanguageRegistry, types::CapabilityLevel};
+
+    fn marker_extensions(description: &str) -> Option<BTreeSet<String>> {
+        let (marker, _) = description.strip_prefix('[')?.split_once(']')?;
+        Some(
+            marker
+                .split('/')
+                .map(|extension| extension.trim_start_matches('.').to_owned())
+                .collect(),
+        )
+    }
+
+    let registry = LanguageRegistry::with_defaults();
+    let supporting = |operation: &str| -> BTreeSet<String> {
+        registry
+            .supported_extensions()
+            .into_iter()
+            .filter(|extension| {
+                let path = std::path::PathBuf::from(format!("/virtual/sample.{extension}"));
+                registry.adapter_for(&path).is_some_and(|adapter| {
+                    adapter.capability(operation) != CapabilityLevel::Unsupported
+                })
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+
+    let mut client = McpClientProcess::start();
+    let _ = client.initialize();
+    client.send(&json!({"jsonrpc": "2.0", "id": 900, "method": "tools/list", "params": {}}));
+    let listed = client.receive();
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .expect("tools/list should return an array")
+        .clone();
+    client.shutdown();
+
+    let mut checked = 0;
+    for tool in tools {
+        let name = tool["name"].as_str().expect("tool should have a name");
+        let description = tool["description"]
+            .as_str()
+            .expect("tool should have a description");
+        let Some(published) = marker_extensions(description) else {
+            continue;
+        };
+        let expected = supporting(name);
+        assert!(
+            !expected.is_empty(),
+            "{name} publishes an extension marker but no provider supports it"
+        );
+        assert_eq!(
+            published, expected,
+            "{name} advertises {published:?} but the registry supports {expected:?}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 7,
+        "expected the language-aware tools to publish markers, checked {checked}"
     );
 }

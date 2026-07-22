@@ -37,7 +37,7 @@ Direct binary launches can fall back to the process working directory; set
 absolute paths, an explicit workspace root, or client-supplied roots.
 
 File-based tools require an exact existing `.ts`, `.tsx`, `.js`, `.jsx`, `.rs`,
-`.py`, `.java`, `.go`, `.json`, or `.md` source-file path. The `path` parameter is
+`.py`, `.java`, `.go`, `.json`, `.md`, or `.markdown` source-file path. The `path` parameter is
 **not** a TypeScript module specifier: module aliases, directory imports,
 implicit extensions, and implicit index files are not resolved.
 `search_symbols` is the exception — its `path` is an exact existing workspace
@@ -61,7 +61,7 @@ error — never an empty result. `get_capabilities` reports the same matrix at
 runtime.
 
 In MCP `tools/list`, language-aware descriptions begin with a compact extension
-marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md]`.
+marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md/.markdown]`.
 
 ### Compact tuple rows
 
