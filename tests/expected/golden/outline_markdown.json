@@ -1,0 +1,56 @@
+[
+  {
+    "end": 42,
+    "kind": "section",
+    "name": "Handbook",
+    "start": 8
+  },
+  {
+    "end": 18,
+    "kind": "section",
+    "name": "Handbook.Install",
+    "start": 12
+  },
+  {
+    "end": 18,
+    "kind": "section",
+    "name": "Handbook.Install.Options",
+    "start": 14
+  },
+  {
+    "end": 24,
+    "kind": "section",
+    "name": "Handbook.Configure",
+    "start": 18
+  },
+  {
+    "end": 24,
+    "kind": "section",
+    "name": "Handbook.Configure.Options",
+    "start": 20
+  },
+  {
+    "end": 33,
+    "kind": "section",
+    "name": "Handbook.Code",
+    "start": 24
+  },
+  {
+    "end": 39,
+    "kind": "section",
+    "name": "Handbook.Skipped Levels",
+    "start": 33
+  },
+  {
+    "end": 39,
+    "kind": "section",
+    "name": "Handbook.Skipped Levels.Deep",
+    "start": 35
+  },
+  {
+    "end": 42,
+    "kind": "section",
+    "name": "Handbook.Closed ATX",
+    "start": 39
+  }
+]

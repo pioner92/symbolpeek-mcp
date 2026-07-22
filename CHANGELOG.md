@@ -5,8 +5,25 @@ All notable changes to SymbolPeek are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- **Markdown support** (`.md`, `.markdown`). Headings are the symbols, nested by
+  level, and a symbol spans its whole section rather than the heading line, so
+  `read_symbol` with `Quick start.Connect your client` returns that section —
+  839 bytes instead of this project's 20 KB README. Both `#` and underline
+  (setext) headings are indexed, a `#` inside a fenced code block is not, and
+  repeated headings receive `@line:column` selectors. `read_symbol`,
+  `list_symbols`, `search_symbols`, and `get_document_outline` are supported;
+  the semantic operations do not apply to prose and report as unsupported.
+
 ### Fixed
 
+- **A registered language could be rejected by the filesystem boundary.** The
+  set of supported extensions was written out twice — once by the provider
+  registry and once as a literal list in `load_source` — so a newly registered
+  language was accepted through the MCP entry point and refused through the
+  public API. The boundary now derives its list from the registry, and a test
+  asserts the two agree.
 - **Python definitions guarded by control flow were missing entirely.** A
   function or class inside `if`, `try`, `with`, or a loop was absent from
   `get_document_outline` and unreachable by `read_symbol`, so the standard
@@ -29,6 +46,12 @@ All notable changes to SymbolPeek are documented here. This project follows
   line/column by scanning from the start of the file for every declaration,
   which was quadratic in file size. A 16k-declaration file went from 5.2s to
   0.2s, and outline time is now linear in file size.
+- The embedded Tree-sitter runtime moved from 0.25 to 0.26. The bundled grammars
+  are unaffected — they bind through `tree-sitter-language` rather than the core
+  crate — and no provider behaviour changed.
+- Outline snapshots now cover every Tree-sitter language. They previously
+  covered only TypeScript, so a change in the shared Tree-sitter backend could
+  drop a declaration for the other providers without failing a test.
 
 ## [0.4.1] — 2026-07-22
 

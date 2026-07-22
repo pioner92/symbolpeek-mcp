@@ -1,6 +1,7 @@
 pub mod go;
 pub mod java;
 pub mod json;
+pub mod markdown;
 pub mod python;
 pub mod rust;
 pub mod tree_sitter;
@@ -325,6 +326,21 @@ impl LanguageRegistry {
         Self::default()
     }
 
+    /// Every extension the registered providers own. The filesystem boundary
+    /// derives its own allowlist from this so a newly registered language
+    /// cannot be accepted by one and rejected by the other.
+    #[must_use]
+    pub fn supported_extensions(&self) -> Vec<&'static str> {
+        let mut extensions = self
+            .adapters
+            .iter()
+            .flat_map(|adapter| adapter.supported_extensions().iter().copied())
+            .collect::<Vec<_>>();
+        extensions.sort_unstable();
+        extensions.dedup();
+        extensions
+    }
+
     #[must_use]
     pub fn with_defaults() -> Self {
         Self {
@@ -335,6 +351,7 @@ impl LanguageRegistry {
                 Box::new(java::JavaAdapter::new()),
                 Box::new(go::GoAdapter::new()),
                 Box::new(json::JsonAdapter::new()),
+                Box::new(markdown::MarkdownAdapter::new()),
             ],
         }
     }

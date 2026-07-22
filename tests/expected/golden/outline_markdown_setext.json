@@ -1,0 +1,26 @@
+[
+  {
+    "end": 21,
+    "kind": "section",
+    "name": "Release Notes",
+    "start": 1
+  },
+  {
+    "end": 12,
+    "kind": "section",
+    "name": "Release Notes.Version 2",
+    "start": 7
+  },
+  {
+    "end": 17,
+    "kind": "section",
+    "name": "Release Notes.Version 1",
+    "start": 12
+  },
+  {
+    "end": 21,
+    "kind": "section",
+    "name": "Appendix",
+    "start": 17
+  }
+]

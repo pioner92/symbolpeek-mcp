@@ -229,3 +229,71 @@ fn filesystem_accepts_json_files() {
     assert_eq!(loaded.extension, "json");
     std::fs::remove_dir_all(root).expect("temporary directory should be removable");
 }
+
+fn linked_data_file() -> SourceFile {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/json/linked_data.json");
+    let source = std::fs::read_to_string(&path).expect("linked data fixture should be readable");
+    SourceFile {
+        path,
+        source: Arc::from(source),
+        extension: "json".to_owned(),
+    }
+}
+
+/// Duplicate declarations are disambiguated with `@line:column` selectors, and
+/// the resolver strips that suffix when matching. JSON-LD keys start with `@`
+/// and a key may even be spelled like a selector, so the two must not collide:
+/// a real name always wins over selector parsing.
+#[test]
+fn at_prefixed_keys_survive_occurrence_selector_parsing() {
+    let file = linked_data_file();
+    let parsed = JsonAdapter::new()
+        .parse(&file)
+        .expect("linked data fixture should parse");
+
+    for (pointer, expected) in [
+        ("/@context", "\"@context\": \"https://schema.org\""),
+        ("/@type", "\"@type\": \"Person\""),
+        ("/@id", "\"@id\": \"https://example.com/#me\""),
+        (
+            "/weird@12:34",
+            "\"weird@12:34\": \"a key shaped like an occurrence selector\"",
+        ),
+        ("/nested/@type", "\"@type\": \"Organization\""),
+        ("/nested/@id", "\"@id\": \"https://example.com/#acme\""),
+    ] {
+        let read = parsed
+            .read_symbol(&file, pointer)
+            .unwrap_or_else(|error| panic!("{pointer} should resolve: {error}"));
+        assert_eq!(read.source, expected, "wrong declaration for {pointer}");
+    }
+}
+
+/// A JSON object may repeat a key. Both declarations must stay addressable
+/// rather than collapsing onto one unreachable pointer.
+#[test]
+fn duplicate_keys_are_addressable_through_occurrence_selectors() {
+    let file = linked_data_file();
+    let parsed = JsonAdapter::new()
+        .parse(&file)
+        .expect("linked data fixture should parse");
+
+    let error = parsed
+        .read_symbol(&file, "/name")
+        .expect_err("a repeated key should not silently resolve to one occurrence");
+    let SymbolPeekError::AmbiguousSymbol { candidates, .. } = error else {
+        panic!("expected AmbiguousSymbol, got {error:?}");
+    };
+    assert_eq!(candidates, "/name@5:3, /name@6:3");
+
+    for (selector, expected) in [
+        ("/name@5:3", "\"name\": \"first\""),
+        ("/name@6:3", "\"name\": \"second\""),
+    ] {
+        let read = parsed
+            .read_symbol(&file, selector)
+            .unwrap_or_else(|error| panic!("{selector} should resolve: {error}"));
+        assert_eq!(read.source, expected);
+    }
+}

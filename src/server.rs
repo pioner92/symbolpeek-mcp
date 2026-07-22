@@ -324,7 +324,7 @@ impl Default for SymbolPeekServer {
 #[tool_router]
 impl SymbolPeekServer {
     #[tool(
-        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json] Exact symbol source + trust metadata."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md] Exact symbol source + trust metadata."
     )]
     async fn read_symbol(
         &self,
@@ -346,7 +346,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json] Top-level symbols; rows=fields; one file/page; offset/next_offset."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md] Top-level symbols; rows=fields; one file/page; offset/next_offset."
     )]
     async fn list_symbols(
         &self,
@@ -479,7 +479,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json] Workspace declarations; stable rows=fields; file_idx are page-local; offset/next_offset."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md] Workspace declarations; stable rows=fields; file_idx are page-local; offset/next_offset."
     )]
     async fn search_symbols(
         &self,
@@ -548,7 +548,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json] Nested declarations; recursive rows follow fields at every level."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md] Nested declarations; recursive rows follow fields at every level."
     )]
     async fn get_document_outline(
         &self,

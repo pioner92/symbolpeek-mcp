@@ -37,7 +37,7 @@ Direct binary launches can fall back to the process working directory; set
 absolute paths, an explicit workspace root, or client-supplied roots.
 
 File-based tools require an exact existing `.ts`, `.tsx`, `.js`, `.jsx`, `.rs`,
-`.py`, `.java`, `.go`, or `.json` source-file path. The `path` parameter is
+`.py`, `.java`, `.go`, `.json`, or `.md` source-file path. The `path` parameter is
 **not** a TypeScript module specifier: module aliases, directory imports,
 implicit extensions, and implicit index files are not resolved.
 `search_symbols` is the exception — its `path` is an exact existing workspace
@@ -61,7 +61,7 @@ error — never an empty result. `get_capabilities` reports the same matrix at
 runtime.
 
 In MCP `tools/list`, language-aware descriptions begin with a compact extension
-marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json]`.
+marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md]`.
 
 ### Compact tuple rows
 
@@ -206,6 +206,12 @@ JSON properties use RFC 6901 pointers such as
 `/checkout/errors/payment_failed`; `~` and `/` inside keys are escaped as `~0`
 and `~1`. A unique bare key also resolves, while duplicate keys require the full
 pointer.
+
+Markdown headings are symbols nested by level, and a symbol spans its whole
+section rather than the heading line, so `read_symbol` on
+`Quick start.Connect your client` returns that section. Both `#` and underline
+(setext) headings are indexed; a `#` inside a fenced code block is not. Repeated
+headings receive `@line:column` selectors like any other duplicate name.
 
 ## `list_symbols`
 

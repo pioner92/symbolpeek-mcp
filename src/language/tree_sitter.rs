@@ -118,15 +118,32 @@ impl SyntaxIndex {
         node: Node<'_>,
         definition: SyntaxDefinitionSpec,
     ) -> Option<usize> {
-        if node.has_error() || definition.name.is_empty() {
+        if node.has_error() {
             return None;
         }
         let start_byte = declaration_start(node, source);
+        self.push_span(source, start_byte, node.end_byte(), definition)
+    }
+
+    /// Adds a declaration whose boundaries the grammar does not express as one
+    /// node. Markdown setext headings need this: they stay flat siblings, so
+    /// the section they open runs to the next heading of the same or higher
+    /// level rather than to the end of any single node.
+    pub fn push_span(
+        &mut self,
+        source: &str,
+        start_byte: usize,
+        end_byte: usize,
+        definition: SyntaxDefinitionSpec,
+    ) -> Option<usize> {
+        if definition.name.is_empty() || start_byte >= end_byte {
+            return None;
+        }
         let (start, end) = {
             let lines = self.lines.get_or_insert_with(|| LineIndex::build(source));
             (
                 lines.point(source, start_byte),
-                lines.point(source, node.end_byte()),
+                lines.point(source, end_byte),
             )
         };
         let id = self.definitions.len();
@@ -135,7 +152,7 @@ impl SyntaxIndex {
             display_name: definition.display_name,
             kind: definition.kind,
             start_byte,
-            end_byte: node.end_byte(),
+            end_byte,
             lines: LineRange {
                 start: start.0,
                 end: end.0,

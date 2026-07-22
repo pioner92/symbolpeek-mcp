@@ -179,3 +179,28 @@ fn workspace_search_skips_delegated_providers_without_matching_files() {
     assert_eq!(shared_calls.load(Ordering::Relaxed), 1);
     std::fs::remove_dir_all(root).expect("workspace should be removable");
 }
+
+/// The filesystem boundary and the provider registry must agree on which
+/// extensions exist. They were separate lists once, so a language could be
+/// fully registered yet rejected by `load_source` — invisible through the MCP
+/// entry point and only reachable through the public API.
+#[test]
+fn every_registered_extension_is_accepted_by_the_filesystem_boundary() {
+    let registry = LanguageRegistry::with_defaults();
+    let extensions = registry.supported_extensions();
+    assert!(
+        extensions.len() >= 10,
+        "expected the default providers, found {extensions:?}"
+    );
+    for extension in extensions {
+        let path = std::path::PathBuf::from(format!("/virtual/sample.{extension}"));
+        assert!(
+            symbolpeek::filesystem::is_supported(&path),
+            ".{extension} is registered but rejected by the filesystem boundary"
+        );
+        assert!(
+            registry.adapter_for(&path).is_some(),
+            ".{extension} is reported by the registry but owned by no adapter"
+        );
+    }
+}

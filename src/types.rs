@@ -29,6 +29,7 @@ pub enum SymbolKind {
     Macro,
     Static,
     JsonProperty,
+    Section,
     Unknown,
 }
 

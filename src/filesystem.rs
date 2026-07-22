@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use crate::errors::SymbolPeekError;
@@ -252,16 +252,17 @@ const fn hex_value(value: u8) -> Option<u8> {
     }
 }
 
+/// Derived from the provider registry rather than restated here: a hardcoded
+/// copy silently rejected files for a language that was otherwise fully
+/// registered.
 pub fn is_supported(path: &Path) -> bool {
+    static EXTENSIONS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    let extensions = EXTENSIONS
+        .get_or_init(|| crate::language::LanguageRegistry::with_defaults().supported_extensions());
     path.extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .is_some_and(|extension| {
-            matches!(
-                extension.as_str(),
-                "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "java" | "go" | "json"
-            )
-        })
+        .is_some_and(|extension| extensions.contains(&extension.as_str()))
 }
 
 /// Markers that identify a project root, in no particular order.

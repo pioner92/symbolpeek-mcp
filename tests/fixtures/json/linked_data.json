@@ -1,0 +1,12 @@
+{
+  "@context": "https://schema.org",
+  "@type": "Person",
+  "@id": "https://example.com/#me",
+  "name": "first",
+  "name": "second",
+  "weird@12:34": "a key shaped like an occurrence selector",
+  "nested": {
+    "@type": "Organization",
+    "@id": "https://example.com/#acme"
+  }
+}

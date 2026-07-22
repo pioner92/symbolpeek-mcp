@@ -1,0 +1,56 @@
+[
+  {
+    "end": 2,
+    "kind": "json_property",
+    "name": "@context",
+    "start": 2
+  },
+  {
+    "end": 3,
+    "kind": "json_property",
+    "name": "@type",
+    "start": 3
+  },
+  {
+    "end": 4,
+    "kind": "json_property",
+    "name": "@id",
+    "start": 4
+  },
+  {
+    "end": 5,
+    "kind": "json_property",
+    "name": "name@5:3",
+    "start": 5
+  },
+  {
+    "end": 6,
+    "kind": "json_property",
+    "name": "name@6:3",
+    "start": 6
+  },
+  {
+    "end": 7,
+    "kind": "json_property",
+    "name": "weird@12:34",
+    "start": 7
+  },
+  {
+    "end": 11,
+    "kind": "json_property",
+    "name": "nested",
+    "start": 8
+  },
+  {
+    "end": 9,
+    "kind": "json_property",
+    "name": "nested.@type",
+    "start": 9
+  },
+  {
+    "end": 10,
+    "kind": "json_property",
+    "name": "nested.@id",
+    "start": 10
+  }
+]

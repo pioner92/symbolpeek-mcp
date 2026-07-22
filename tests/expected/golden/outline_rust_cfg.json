@@ -1,0 +1,56 @@
+[
+  {
+    "end": 7,
+    "kind": "function",
+    "name": "platform_root@4:1",
+    "start": 4
+  },
+  {
+    "end": 12,
+    "kind": "function",
+    "name": "platform_root@9:1",
+    "start": 9
+  },
+  {
+    "end": 14,
+    "kind": "struct",
+    "name": "Client",
+    "start": 14
+  },
+  {
+    "end": 18,
+    "kind": "impl",
+    "name": "impl Client",
+    "start": 16
+  },
+  {
+    "end": 17,
+    "kind": "method",
+    "name": "impl Client.send",
+    "start": 17
+  },
+  {
+    "end": 22,
+    "kind": "trait",
+    "name": "Transport",
+    "start": 20
+  },
+  {
+    "end": 21,
+    "kind": "method",
+    "name": "Transport.send",
+    "start": 21
+  },
+  {
+    "end": 26,
+    "kind": "impl",
+    "name": "impl Transport for Client",
+    "start": 24
+  },
+  {
+    "end": 25,
+    "kind": "method",
+    "name": "impl Transport for Client.send",
+    "start": 25
+  }
+]

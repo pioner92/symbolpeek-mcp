@@ -12,7 +12,8 @@ use support::conformance::{
     CaseSpec, ContainerShape, FormattingShape, Language,
 };
 use symbolpeek::language::{
-    go::GoAdapter, java::JavaAdapter, python::PythonAdapter, rust::RustAdapter, LanguageAdapter,
+    go::GoAdapter, java::JavaAdapter, markdown::MarkdownAdapter, python::PythonAdapter,
+    rust::RustAdapter, LanguageAdapter,
 };
 
 fn case_strategy() -> impl Strategy<Value = CaseSpec> {
@@ -225,7 +226,7 @@ fn curated_real_world_corpus_obeys_cross_tool_contracts() {
 #[test]
 fn every_language_reports_only_readable_names() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let cases: [(&dyn LanguageAdapter, &str, &str); 5] = [
+    let cases: [(&dyn LanguageAdapter, &str, &str); 8] = [
         // Kept out of `fixtures/rust`, whose contents an end-to-end workspace
         // search counts.
         (&RustAdapter::new(), "reachability/cfg_twins.rs", "rs"),
@@ -237,6 +238,10 @@ fn every_language_reports_only_readable_names() {
         ),
         (&GoAdapter::new(), "go/duplicate_init.go", "go"),
         (&JavaAdapter::new(), "java/Overloads.java", "java"),
+        (&MarkdownAdapter::new(), "markdown/handbook.md", "md"),
+        (&MarkdownAdapter::new(), "markdown/setext.md", "md"),
+        // The project's own README is the largest real Markdown available.
+        (&MarkdownAdapter::new(), "../../README.md", "md"),
     ];
     for (adapter, relative, extension) in cases {
         let path = root.join(relative);

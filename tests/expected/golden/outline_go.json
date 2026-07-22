@@ -1,0 +1,38 @@
+[
+  {
+    "end": 18,
+    "kind": "struct",
+    "name": "Store",
+    "start": 18
+  },
+  {
+    "end": 20,
+    "kind": "method",
+    "name": "Store.Get",
+    "start": 20
+  },
+  {
+    "end": 8,
+    "kind": "variable",
+    "name": "registry",
+    "start": 8
+  },
+  {
+    "end": 12,
+    "kind": "function",
+    "name": "init@10:1",
+    "start": 10
+  },
+  {
+    "end": 16,
+    "kind": "function",
+    "name": "init@14:1",
+    "start": 14
+  },
+  {
+    "end": 22,
+    "kind": "function",
+    "name": "Report",
+    "start": 22
+  }
+]

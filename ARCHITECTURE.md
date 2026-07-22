@@ -68,6 +68,7 @@ src/
     ├── mod.rs                     provider abstractions and registry
     ├── tree_sitter.rs             shared syntax index and operations
     ├── json.rs                    JSON Pointer property index
+    ├── markdown/                  Markdown heading-section index
     └── typescript/
         ├── mod.rs                 Rust-side provider adapter
         └── worker.js              official TypeScript API worker

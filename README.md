@@ -15,7 +15,8 @@ Ask for the symbol you need—not the entire file.
   <code>.py</code>&nbsp;&nbsp;
   <code>.java</code>&nbsp;&nbsp;
   <code>.go</code>&nbsp;&nbsp;
-  <code>.json</code>
+  <code>.json</code>&nbsp;&nbsp;
+  <code>.md</code>
 </p>
 
 <p>
@@ -39,8 +40,8 @@ function do" or "who calls it", the agent asks for one declaration and gets
 exactly that.
 
 TypeScript and JavaScript are analyzed with the official TypeScript Compiler
-API. Rust, Python, Java, Go, and JSON use embedded Tree-sitter for syntax-level
-operations.
+API. Rust, Python, Java, Go, JSON, and Markdown use embedded Tree-sitter for
+syntax-level operations.
 
 ## Quick start
 
@@ -49,7 +50,7 @@ operations.
 - An MCP client. Any stdio MCP client works; [Codex and Claude
   Code](#connect-your-client) are documented below.
 - **Node.js 20 or newer** — required for `.ts`, `.tsx`, `.js`, and `.jsx`
-  analysis. Rust, Python, Java, Go, and JSON work without it.
+  analysis. Rust, Python, Java, Go, JSON, and Markdown work without it.
 
 No clone, Rust toolchain, or manual build is required.
 
@@ -178,24 +179,24 @@ one.
 
 Every language-aware operation, exactly as reported by `get_capabilities`:
 
-| Operation | `.ts` `.tsx` `.js` `.jsx` | `.rs` | `.py` `.java` `.go` | `.json` |
-| --- | :---: | :---: | :---: | :---: |
-| `read_symbol` | ✅ | ✅ | ✅ | ✅ |
-| `list_symbols` | ✅ | ✅ | ✅ | ✅ |
-| `search_symbols` | ✅ | ✅ | ✅ | ✅ |
-| `get_document_outline` | ✅ | ✅ | ✅ | ✅ |
-| `find_dependencies` | ✅ | ✅¹ | ✅¹ | — |
-| `read_symbol_context` | ✅ | ✅¹ | ✅¹ | — |
-| `find_implementations` | ✅ | ✅² | — | — |
-| `find_references` | ✅ | — | — | — |
-| `find_callers` | ✅ | — | — | — |
-| `find_callees` | ✅ | — | — | — |
-| `go_to_definition` | ✅ | — | — | — |
-| `get_type` | ✅ | — | — | — |
-| `get_diagnostics` | ✅ | — | — | — |
-| `get_call_hierarchy` | ✅ | — | — | — |
-| **Backend** | TypeScript Compiler API | Tree-sitter | Tree-sitter | Tree-sitter |
-| **Analysis level** | semantic | syntax | syntax | syntax |
+| Operation | `.ts` `.tsx` `.js` `.jsx` | `.rs` | `.py` `.java` `.go` | `.json` | `.md` |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| `read_symbol` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `list_symbols` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `search_symbols` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `get_document_outline` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `find_dependencies` | ✅ | ✅¹ | ✅¹ | — | — |
+| `read_symbol_context` | ✅ | ✅¹ | ✅¹ | — | — |
+| `find_implementations` | ✅ | ✅² | — | — | — |
+| `find_references` | ✅ | — | — | — | — |
+| `find_callers` | ✅ | — | — | — | — |
+| `find_callees` | ✅ | — | — | — | — |
+| `go_to_definition` | ✅ | — | — | — | — |
+| `get_type` | ✅ | — | — | — | — |
+| `get_diagnostics` | ✅ | — | — | — | — |
+| `get_call_hierarchy` | ✅ | — | — | — | — |
+| **Backend** | TypeScript Compiler API | Tree-sitter | Tree-sitter | Tree-sitter | Tree-sitter |
+| **Analysis level** | semantic | syntax | syntax | syntax | syntax |
 
 ¹ Same-file only — conservative, no cross-file resolution.
 ² Explicit `impl Type` and `impl Trait for Type` blocks. Alias, re-export, and
@@ -310,6 +311,15 @@ methods use qualified names such as `Client.send`, and trait impl methods use
 `/checkout/errors/payment_failed`. Array-valued properties remain single
 addressable branches instead of expanding every element, which keeps large
 locale and data files token-efficient. `.jsonc` and JSON5 are not supported.
+
+**Markdown** — headings are the symbols, nested by level, and a symbol spans the
+whole section rather than the heading line. `read_symbol` with
+`Quick start.Connect your client` returns that section alone; on this README
+that is 839 bytes instead of 20 KB. Both `#` and underline (setext) headings are
+indexed, `#` inside a fenced code block is not, and repeated headings such as
+`Options` under several commands get `@line:column` selectors so each stays
+addressable. Prose, lists, and code blocks are not indexed separately — this
+finds sections, not full-text matches.
 
 ## Using the tools
 

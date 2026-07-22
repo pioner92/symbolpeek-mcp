@@ -393,7 +393,7 @@ fn assert_language_support_markers(tools: &[Value]) {
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("syntax tool should publish a description");
-        assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json]"));
+        assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go/.json/.md]"));
     }
     for name in ["find_dependencies", "read_symbol_context"] {
         let description = tools
