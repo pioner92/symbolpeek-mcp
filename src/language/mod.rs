@@ -1,3 +1,6 @@
+pub mod go;
+pub mod java;
+pub mod python;
 pub mod rust;
 pub mod tree_sitter;
 pub mod typescript;
@@ -236,12 +239,12 @@ pub trait LanguageAdapter: Send + Sync {
     fn supported_extensions(&self) -> &'static [&'static str];
     fn supports(&self, path: &Path) -> bool;
 
-    /// Returns whether this provider can operate on a workspace directory.
-    fn supports_workspace(&self, _path: &Path) -> bool {
-        false
+    /// Controls whether workspace discovery belongs to the registry or provider.
+    fn file_discovery(&self) -> FileDiscovery {
+        FileDiscovery::Delegated
     }
 
-    /// Searches symbols across a workspace.
+    /// Searches a workspace using provider-owned discovery.
     ///
     /// # Errors
     ///
@@ -254,6 +257,19 @@ pub trait LanguageAdapter: Send + Sync {
         Err(SymbolPeekError::UnsupportedOperation {
             operation: "search_symbols".to_owned(),
         })
+    }
+
+    /// Searches files selected by the registry's shared walk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot search the supplied files.
+    fn search_symbols_in_files(
+        &self,
+        request: &SearchSymbolsRequest,
+        _files: &[PathBuf],
+    ) -> Result<SearchSymbolsResult, SymbolPeekError> {
+        self.search_symbols(request)
     }
     /// Parses one current source snapshot.
     ///
@@ -283,6 +299,12 @@ pub trait LanguageAdapter: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileDiscovery {
+    Delegated,
+    SharedWalk,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
     #[error("a language provider is already registered for extension '.{extension}'")]
@@ -308,6 +330,9 @@ impl LanguageRegistry {
             adapters: vec![
                 Box::new(typescript::TypeScriptAdapter),
                 Box::new(rust::RustAdapter::new()),
+                Box::new(python::PythonAdapter::new()),
+                Box::new(java::JavaAdapter::new()),
+                Box::new(go::GoAdapter::new()),
             ],
         }
     }
@@ -345,14 +370,6 @@ impl LanguageRegistry {
             .iter()
             .map(Box::as_ref)
             .find(|adapter| adapter.supports(path))
-    }
-
-    #[must_use]
-    pub fn adapter_for_workspace(&self, path: &Path) -> Option<&dyn LanguageAdapter> {
-        self.adapters
-            .iter()
-            .map(Box::as_ref)
-            .find(|adapter| adapter.supports_workspace(path))
     }
 
     #[must_use]
@@ -404,17 +421,45 @@ impl LanguageRegistry {
         request: &SearchSymbolsRequest,
     ) -> Result<SearchSymbolsResult, SymbolPeekError> {
         let mut aggregate = WorkspaceSearch::default();
+        let root = crate::filesystem::resolve_input_path(&request.path)?;
+        let files = workspace_files(&root)?;
+        let mut present = vec![false; self.adapters.len()];
+        let mut shared_files = vec![Vec::new(); self.adapters.len()];
+        for path in files {
+            if let Some((index, adapter)) = self
+                .adapters
+                .iter()
+                .enumerate()
+                .find(|(_, adapter)| adapter.supports(&path))
+            {
+                present[index] = true;
+                if adapter.file_discovery() == FileDiscovery::SharedWalk {
+                    shared_files[index].push(path);
+                }
+            }
+        }
         let target = request
             .offset
             .unwrap_or_default()
             .saturating_add(request.max_results.unwrap_or(200).clamp(1, 1000))
             .saturating_add(1);
-        for adapter in self
-            .adapters
-            .iter()
-            .filter(|adapter| adapter.supports_workspace(Path::new(&request.path)))
-        {
-            aggregate.collect(adapter.as_ref(), request, target)?;
+        for (index, adapter) in self.adapters.iter().enumerate() {
+            if !present[index] {
+                continue;
+            }
+            match adapter.file_discovery() {
+                FileDiscovery::Delegated => {
+                    aggregate.collect(adapter.as_ref(), request, None, target)?;
+                }
+                FileDiscovery::SharedWalk => {
+                    aggregate.collect(
+                        adapter.as_ref(),
+                        request,
+                        Some(&shared_files[index]),
+                        target,
+                    )?;
+                }
+            }
         }
         Ok(aggregate.finish(request))
     }
@@ -445,6 +490,7 @@ impl WorkspaceSearch {
         &mut self,
         adapter: &dyn LanguageAdapter,
         request: &SearchSymbolsRequest,
+        files: Option<&[PathBuf]>,
         target: usize,
     ) -> Result<(), SymbolPeekError> {
         let mut provider_offset = 0;
@@ -455,7 +501,11 @@ impl WorkspaceSearch {
                 offset: Some(provider_offset),
                 ..request.clone()
             };
-            let result = match adapter.search_symbols(&provider_request) {
+            let result = match files {
+                Some(files) => adapter.search_symbols_in_files(&provider_request, files),
+                None => adapter.search_symbols(&provider_request),
+            };
+            let result = match result {
                 Ok(result) => result,
                 Err(SymbolPeekError::UnsupportedOperation { .. }) => return Ok(()),
                 Err(error) => return Err(error),
@@ -556,6 +606,47 @@ impl WorkspaceSearch {
             next_offset,
         }
     }
+}
+
+const IGNORED_WORKSPACE_DIRECTORIES: &[&str] = &[".git", ".hg", ".svn", "node_modules", "target"];
+
+fn workspace_files(root: &Path) -> Result<Vec<PathBuf>, SymbolPeekError> {
+    if root.is_file() {
+        return Ok(vec![root.to_path_buf()]);
+    }
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries =
+            std::fs::read_dir(&directory).map_err(|source| SymbolPeekError::ReadFile {
+                path: directory.clone(),
+                source,
+            })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| SymbolPeekError::ReadFile {
+                path: directory.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| SymbolPeekError::ReadFile {
+                    path: path.clone(),
+                    source,
+                })?;
+            if file_type.is_dir() {
+                if !IGNORED_WORKSPACE_DIRECTORIES
+                    .contains(&entry.file_name().to_string_lossy().as_ref())
+                {
+                    pending.push(path);
+                }
+            } else if file_type.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 const LANGUAGE_OPERATIONS: [&str; 14] = [

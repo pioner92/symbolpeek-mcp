@@ -67,10 +67,6 @@ impl LanguageAdapter for TypeScriptAdapter {
             })
     }
 
-    fn supports_workspace(&self, path: &Path) -> bool {
-        path.is_dir()
-    }
-
     fn search_symbols(
         &self,
         request: &SearchSymbolsRequest,

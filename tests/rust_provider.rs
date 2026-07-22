@@ -59,6 +59,28 @@ fn fixture() -> symbolpeek::filesystem::SourceFile {
         .expect("Rust fixture should load")
 }
 
+fn rust_files(root: &std::path::Path) -> Vec<PathBuf> {
+    fn visit(directory: &std::path::Path, files: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory)
+            .expect("fixture directory should be readable")
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|value| value.to_str()) != Some("target") {
+                    visit(&path, files);
+                }
+            } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    visit(root, &mut files);
+    files.sort();
+    files
+}
+
 #[test]
 fn lists_and_reads_rust_symbols_with_syntax_metadata() {
     let file = fixture();
@@ -138,28 +160,35 @@ fn builds_nested_rust_outline_and_marks_recovered_syntax() {
 #[test]
 fn searches_rust_workspace_stably_and_ignores_target() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust");
+    let files = rust_files(&root);
     let adapter = RustAdapter::new();
     let first = adapter
-        .search_symbols(&SearchSymbolsRequest {
-            path: root.display().to_string(),
-            query: "send".to_owned(),
-            kind: Some(SymbolKind::Method),
-            max_results: Some(1),
-            offset: None,
-        })
+        .search_symbols_in_files(
+            &SearchSymbolsRequest {
+                path: root.display().to_string(),
+                query: "send".to_owned(),
+                kind: Some(SymbolKind::Method),
+                max_results: Some(1),
+                offset: None,
+            },
+            &files,
+        )
         .expect("Rust workspace search should succeed");
     assert_eq!(first.symbols.len(), 1);
     assert!(first.truncated);
     assert_eq!(first.next_offset, Some(1));
 
     let second = adapter
-        .search_symbols(&SearchSymbolsRequest {
-            path: root.display().to_string(),
-            query: "send".to_owned(),
-            kind: Some(SymbolKind::Method),
-            max_results: Some(1),
-            offset: first.next_offset,
-        })
+        .search_symbols_in_files(
+            &SearchSymbolsRequest {
+                path: root.display().to_string(),
+                query: "send".to_owned(),
+                kind: Some(SymbolKind::Method),
+                max_results: Some(1),
+                offset: first.next_offset,
+            },
+            &files,
+        )
         .expect("second Rust search page should succeed");
     assert_eq!(second.symbols.len(), 1);
     assert_ne!(first.symbols[0].name, second.symbols[0].name);
@@ -443,15 +472,31 @@ impl<T> Alpha<T> {}
         .any(|item| item.symbol == "impl Service<T> for T"));
 
     let searched = RustAdapter::new()
-        .search_symbols(&SearchSymbolsRequest {
-            path: workspace.root.display().to_string(),
-            query: "Service".to_owned(),
-            kind: None,
-            max_results: None,
-            offset: None,
-        })
+        .search_symbols_in_files(
+            &SearchSymbolsRequest {
+                path: workspace.root.display().to_string(),
+                query: "Service".to_owned(),
+                kind: None,
+                max_results: None,
+                offset: None,
+            },
+            &rust_files(&workspace.root),
+        )
         .expect("workspace search should recover malformed files");
-    assert!(!searched.analysis.complete);
+    assert!(searched.analysis.complete);
+    let malformed_search = RustAdapter::new()
+        .search_symbols_in_files(
+            &SearchSymbolsRequest {
+                path: workspace.root.display().to_string(),
+                query: "incomplete".to_owned(),
+                kind: None,
+                max_results: None,
+                offset: None,
+            },
+            &rust_files(&workspace.root),
+        )
+        .expect("matching malformed files should be reported as incomplete");
+    assert!(!malformed_search.analysis.complete);
 
     let first = parsed
         .find_implementations(&file, &request("Service", Some(1), None))

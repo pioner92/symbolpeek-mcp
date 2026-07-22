@@ -11,7 +11,10 @@ Ask for the symbol you need—not the entire file.
   <code>.tsx</code>&nbsp;&nbsp;
   <code>.js</code>&nbsp;&nbsp;
   <code>.jsx</code>&nbsp;&nbsp;
-  <code>.rs</code>
+  <code>.rs</code>&nbsp;&nbsp;
+  <code>.py</code>&nbsp;&nbsp;
+  <code>.java</code>&nbsp;&nbsp;
+  <code>.go</code>
 </p>
 
 <p>
@@ -23,10 +26,9 @@ Ask for the symbol you need—not the entire file.
 
 </div>
 
-SymbolPeek helps AI coding agents understand large TypeScript, JavaScript, and
-Rust codebases without reading unnecessary code. TypeScript and JavaScript use
-the official Compiler API and Language Service; Rust uses embedded Tree-sitter
-for the syntax operations it can answer reliably.
+SymbolPeek retrieves minimal source context from TS, JS, Rust, Python, Java,
+and Go. TS/JS use the TypeScript Language Service; the other languages use
+embedded Tree-sitter for reliable syntax-only operations.
 
 For an agent this means fewer whole files pulled into the context window, and
 fewer round-trips spent locating and verifying symbols by hand.
@@ -99,8 +101,8 @@ re-exports.*
 - Compiler options come from the project `tsconfig.json`. The worker itself
   uses the TypeScript runtime selected by `SYMBOLPEEK_TYPESCRIPT_ROOT`; the
   release wrapper points this at SymbolPeek's locked runtime.
-- Rust source ranges and nesting come from `tree-sitter-rust`; semantic Rust
-  operations are unsupported. Every language result includes compact
+- Rust, Python, Java, and Go source ranges and nesting come from Tree-sitter;
+  unsupported semantic operations fail explicitly. Every language result includes compact
   `analysis: { backend, analysis_level, complete }` trust metadata.
 
 ## Capabilities at a glance
@@ -161,6 +163,9 @@ Supported extensions:
 - `.js`
 - `.jsx`
 - `.rs`
+- `.py`
+- `.java`
+- `.go`
 
 The TypeScript provider detects symbols such as:
 
@@ -182,22 +187,21 @@ hand-written parser.
 React component and hook classification follows naming and JSX conventions;
 it is a label applied on top of the compiler-derived syntax tree.
 
-Rust uses embedded Tree-sitter for `read_symbol`, `list_symbols`,
-`search_symbols`, `get_document_outline`, same-file dependencies/context, and
-explicit `impl` discovery. It recognizes functions,
+Rust, Python, Java, and Go use embedded Tree-sitter for `read_symbol`,
+`list_symbols`, `search_symbols`, `get_document_outline`, and conservative
+same-file dependencies/context. Rust additionally supports explicit `impl`
+discovery. Rust recognizes functions,
 structs, unions, enums and variants, traits, impl blocks and methods, modules,
 constants, statics, type declarations, and macros. The reusable
 `TreeSitterLanguage` contract keeps parsing, resolution, pagination, workspace
-search, and response formatting shared for future Python, Kotlin, Swift, and
-C++ providers.
+search, and response formatting shared for future Kotlin, Swift, and C++ providers.
 
 ## Quick start
 
 Requirements:
 
 - Rust 1.82 or newer;
-- Node.js;
-- npm.
+- Node.js + npm (only for TS/JS operations and the release script).
 
 From a checkout of the repository:
 
@@ -205,10 +209,15 @@ From a checkout of the repository:
 sh scripts/build-release.sh
 cargo test
 node scripts/smoke-test.mjs target/release/symbolpeek
+node scripts/benchmark-latency.mjs target/release/symbolpeek 1,10,50
 ```
 
 `scripts/build-release.sh` installs the locked npm dependencies and builds both
 release executables.
+
+The latency script reports cold/warm p50, p95, and max for sequential batches.
+Its Tree-sitter phase deliberately uses an invalid Node path, so it also verifies
+that Rust/Python/Java/Go-only searches never start Node.
 
 The release build creates two equivalent executables:
 
@@ -242,8 +251,8 @@ The same two Rust binaries are installed by:
 cargo install --path .
 ```
 
-The `stats` command is self-contained. Semantic MCP operations additionally
-need the npm TypeScript runtime: use `scripts/run-release.sh`, or set
+The `stats` command and Tree-sitter languages are self-contained. TS/JS
+operations additionally need the npm TypeScript runtime: use `scripts/run-release.sh`, or set
 `SYMBOLPEEK_TYPESCRIPT_ROOT` to a SymbolPeek checkout where `npm ci` has been
 run. `cargo install` does not install that JavaScript dependency.
 

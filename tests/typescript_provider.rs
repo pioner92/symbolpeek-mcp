@@ -170,7 +170,7 @@ fn finds_local_dependencies_and_minimal_context() {
 
 #[test]
 fn rejects_unsupported_extensions_before_parsing() {
-    assert!(!is_supported(std::path::Path::new("notes.py")));
+    assert!(!is_supported(std::path::Path::new("notes.kt")));
     assert!(!is_supported(std::path::Path::new("README")));
     assert!(is_supported(std::path::Path::new("component.TSX")));
 }

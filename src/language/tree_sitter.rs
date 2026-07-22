@@ -15,7 +15,7 @@ use tree_sitter::{Language, Node, Parser};
 use crate::{
     errors::SymbolPeekError,
     filesystem::SourceFile,
-    language::{LanguageAdapter, ParsedFile},
+    language::{FileDiscovery, LanguageAdapter, ParsedFile},
     types::{
         AnalysisMetadata, CapabilityLevel, ContextSymbol, DependencyResult, DocumentOutlineNode,
         DocumentOutlineResult, ImplementationsResult, IndexedSymbolLocation, LineRange,
@@ -344,7 +344,9 @@ impl<L: TreeSitterLanguage> ParsedFile for TreeSitterParsedFile<L> {
                 | SymbolKind::Union
                 | SymbolKind::Trait
                 | SymbolKind::Type
-                | SymbolKind::Enum => local_types.push(context),
+                | SymbolKind::Enum
+                | SymbolKind::Class
+                | SymbolKind::Interface => local_types.push(context),
                 SymbolKind::Constant | SymbolKind::Static => local_constants.push(context),
                 _ => {}
             }
@@ -479,15 +481,16 @@ impl<L: TreeSitterLanguage> LanguageAdapter for TreeSitterAdapter<L> {
         has_extension(path, L::extensions())
     }
 
-    fn supports_workspace(&self, path: &Path) -> bool {
-        path.is_dir()
+    fn file_discovery(&self) -> FileDiscovery {
+        FileDiscovery::SharedWalk
     }
 
-    fn search_symbols(
+    fn search_symbols_in_files(
         &self,
         request: &SearchSymbolsRequest,
+        files: &[PathBuf],
     ) -> Result<SearchSymbolsResult, SymbolPeekError> {
-        search_workspace::<L>(request)
+        search_workspace::<L>(request, files)
     }
 
     fn parse(&self, file: &SourceFile) -> Result<Box<dyn ParsedFile>, SymbolPeekError> {
@@ -623,20 +626,28 @@ fn parse_index<L: TreeSitterLanguage>(file: &SourceFile) -> Result<SyntaxIndex, 
 /// traversal order.
 fn search_workspace<L: TreeSitterLanguage>(
     request: &SearchSymbolsRequest,
+    paths: &[PathBuf],
 ) -> Result<SearchSymbolsResult, SymbolPeekError> {
     let root = crate::filesystem::resolve_input_path(&request.path)?;
-    let mut paths = source_paths(&root, L::extensions())?;
-    paths.sort();
 
     let query = request.query.to_lowercase();
+    let prefilter = query
+        .rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .filter(|part| {
+            part.chars()
+                .all(|character| character.is_alphanumeric() || character == '_')
+        });
     let mut matches = Vec::new();
     let mut complete = true;
     for path in paths {
-        let source =
-            std::fs::read_to_string(&path).map_err(|source| SymbolPeekError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
+        let source = std::fs::read_to_string(path).map_err(|source| SymbolPeekError::ReadFile {
+            path: path.clone(),
+            source,
+        })?;
+        if prefilter.is_some_and(|needle| !source.to_lowercase().contains(needle)) {
+            continue;
+        }
         let extension = path
             .extension()
             .and_then(std::ffi::OsStr::to_str)

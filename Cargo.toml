@@ -3,7 +3,7 @@ name = "symbolpeek"
 version = "0.1.2"
 edition = "2021"
 rust-version = "1.82"
-description = "An MCP server for retrieving minimal TypeScript, JavaScript, and Rust source context"
+description = "An MCP server for retrieving minimal multi-language source context"
 license = "MIT"
 
 [[bin]]
@@ -19,6 +19,9 @@ serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "io-std", "time"] }
 tree-sitter = "0.25.10"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 
 [lints.rust]

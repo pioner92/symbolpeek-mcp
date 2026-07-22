@@ -43,7 +43,7 @@ fn loads_current_source_bytes_from_unicode_filename() {
 #[test]
 fn distinguishes_unsupported_and_missing_files() {
     let directory = test_directory();
-    let unsupported = directory.join("notes.py");
+    let unsupported = directory.join("notes.kt");
     let unsupported_error = load_source(unsupported.to_str().expect("path should be valid UTF-8"))
         .expect_err("unsupported files should not be parsed");
     assert!(matches!(

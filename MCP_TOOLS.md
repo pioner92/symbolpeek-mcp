@@ -11,20 +11,21 @@ SymbolPeek accepts a relative path only when exactly one root contains it.
 Direct binary launches can fall back to the process working directory; the
 global release wrapper disables that fallback to avoid treating the SymbolPeek
 installation directory as the analyzed project.
-File-based tools require the exact existing `.ts`, `.tsx`, `.js`, `.jsx`, or `.rs`
+File-based tools require an exact existing `.ts`, `.tsx`, `.js`, `.jsx`, `.rs`,
+`.py`, `.java`, or `.go`
 source-file path. Their `path` parameter is not a TypeScript module specifier:
 module aliases, directory imports, implicit extensions, and implicit index files
 are not resolved. `search_symbols` is the exception: its `path` is an exact
 existing workspace directory. Supported files are parsed from their current
 contents for every request.
 
-In MCP `tools/list`, every language-aware tool description begins with a short
-support marker: `[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs]` or
-`[TS/JS only: .ts .tsx .js .jsx]`.
+In MCP `tools/list`, language-aware descriptions begin with a compact extension
+marker, for example `[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go]`.
 
-Rust also supports same-file `find_dependencies` / `read_symbol_context` and
-explicit-syntax `find_implementations` through embedded Tree-sitter. Other
-Rust operations return an explicit unsupported-operation error. Every
+Rust, Python, Java, and Go support syntax-only symbol reads/lists/search/outlines
+plus same-file dependencies/context through Tree-sitter. Rust also supports
+explicit-syntax `find_implementations`. Other semantic operations return an
+explicit unsupported-operation error. Every
 supported language operation returns compact trust metadata:
 
 ```json
@@ -454,7 +455,8 @@ language-aware tool.
   "language_fields": ["extensions", "backend", "levels"],
   "operations": ["read_symbol", "list_symbols", "search_symbols"],
   "languages": {
-    "rust": [[".rs"], "tree-sitter", ["syntax", "syntax", "syntax"]]
+    "rust": [[".rs"], "tree-sitter", ["syntax", "syntax", "syntax"]],
+    "python": [[".py"], "tree-sitter", ["syntax", "syntax", "syntax"]]
   }
 }
 ```

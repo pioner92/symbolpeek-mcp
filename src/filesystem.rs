@@ -256,7 +256,12 @@ pub fn is_supported(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .is_some_and(|extension| matches!(extension.as_str(), "ts" | "tsx" | "js" | "jsx" | "rs"))
+        .is_some_and(|extension| {
+            matches!(
+                extension.as_str(),
+                "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "java" | "go"
+            )
+        })
 }
 
 /// Markers that identify a project root, in no particular order.

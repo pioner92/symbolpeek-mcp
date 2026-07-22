@@ -357,15 +357,20 @@ fn assert_language_support_markers(tools: &[Value]) {
         "get_document_outline",
         "find_dependencies",
         "read_symbol_context",
-        "find_implementations",
     ] {
         let description = tools
             .iter()
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("syntax tool should publish a description");
-        assert!(description.starts_with("[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs]"));
+        assert!(description.starts_with("[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go]"));
     }
+    let implementations = tools
+        .iter()
+        .find(|tool| tool["name"] == "find_implementations")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("implementation tool should publish a description");
+    assert!(implementations.starts_with("[.ts/.tsx/.js/.jsx/.rs]"));
     for name in [
         "find_references",
         "find_callers",
@@ -380,7 +385,7 @@ fn assert_language_support_markers(tools: &[Value]) {
             .find(|tool| tool["name"] == name)
             .and_then(|tool| tool["description"].as_str())
             .expect("semantic tool should publish a description");
-        assert!(description.starts_with("[TS/JS only: .ts .tsx .js .jsx]"));
+        assert!(description.starts_with("[.ts/.tsx/.js/.jsx]"));
     }
 }
 
@@ -1239,7 +1244,7 @@ fn handles_valid_invalid_and_unsupported_requests() {
     client.send(&call(
         "list_symbols",
         12,
-        &json!({"path": "unsupported.py"}),
+        &json!({"path": "unsupported.kt"}),
     ));
     let unsupported = client.receive();
     assert_eq!(unsupported["id"], 12);

@@ -324,7 +324,7 @@ impl Default for SymbolPeekServer {
 #[tool_router]
 impl SymbolPeekServer {
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Exact source + metadata for one symbol."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Exact symbol source + trust metadata."
     )]
     async fn read_symbol(
         &self,
@@ -346,7 +346,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Top-level symbols; rows=fields; offset/next_offset; one file/page."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Top-level symbols; rows=fields; one file/page; offset/next_offset."
     )]
     async fn list_symbols(
         &self,
@@ -368,9 +368,7 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&compact))
     }
 
-    #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Direct same-file dependencies."
-    )]
+    #[tool(description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Direct same-file dependencies.")]
     async fn find_dependencies(
         &self,
         peer: Peer<RoleServer>,
@@ -391,7 +389,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Project refs incl. definition; refs rows=fields; base/files and file_idx are page-local."
+        description = "[.ts/.tsx/.js/.jsx] Project refs incl. definition; rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_references(
         &self,
@@ -414,7 +412,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Call sites + enclosing callers; callers rows=fields; base/files and file_idx are page-local."
+        description = "[.ts/.tsx/.js/.jsx] Call sites + enclosing callers; rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_callers(
         &self,
@@ -437,7 +435,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Definition for a line/column usage; project imports resolved."
+        description = "[.ts/.tsx/.js/.jsx] Definition at line/column; project imports resolved."
     )]
     async fn go_to_definition(
         &self,
@@ -459,7 +457,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Symbol + direct same-file helpers, types, constants."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Symbol + same-file helpers/types/constants."
     )]
     async fn read_symbol_context(
         &self,
@@ -481,7 +479,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Workspace declarations; stable symbols rows=fields; base/files and file_idx are page-local; offset/next_offset."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Workspace declarations; stable rows=fields; file_idx are page-local; offset/next_offset."
     )]
     async fn search_symbols(
         &self,
@@ -507,7 +505,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Implementations; Rust=explicit impl syntax; impls rows=fields; base/files and file_idx are page-local."
+        description = "[.ts/.tsx/.js/.jsx/.rs] Implementations; Rust=explicit syntax; rows=fields; base/files and file_idx are page-local."
     )]
     async fn find_implementations(
         &self,
@@ -529,7 +527,7 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&compact))
     }
 
-    #[tool(description = "[TS/JS only: .ts .tsx .js .jsx] Resolved hover/type at line/column.")]
+    #[tool(description = "[.ts/.tsx/.js/.jsx] Resolved hover/type at line/column.")]
     async fn get_type(
         &self,
         peer: Peer<RoleServer>,
@@ -550,7 +548,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS/Rust(syntax): .ts .tsx .js .jsx .rs] Nested declarations; recursive rows follow fields at every level."
+        description = "[.ts/.tsx/.js/.jsx/.rs/.py/.java/.go] Nested declarations; recursive rows follow fields at every level."
     )]
     async fn get_document_outline(
         &self,
@@ -573,7 +571,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Direct named calls; rows=fields, definitions=definition_fields; unresolved definition:null; excludes stdlib/external/dynamic anonymous; paths and file_idx are page-local."
+        description = "[.ts/.tsx/.js/.jsx] Direct named calls; rows=fields, definitions=definition_fields; unresolved definition:null; excludes stdlib/external/dynamic anonymous; paths and file_idx are page-local."
     )]
     async fn find_callees(
         &self,
@@ -595,9 +593,7 @@ impl SymbolPeekServer {
         Ok(mcp::json_result(&compact))
     }
 
-    #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Compiler diagnostics for file or symbol."
-    )]
+    #[tool(description = "[.ts/.tsx/.js/.jsx] Compiler diagnostics for file or symbol.")]
     async fn get_diagnostics(
         &self,
         peer: Peer<RoleServer>,
@@ -629,7 +625,7 @@ impl SymbolPeekServer {
     }
 
     #[tool(
-        description = "[TS/JS only: .ts .tsx .js .jsx] Bounded call graph; rows=node_fields/edge_fields; edge=[caller_idx,callee_idx]."
+        description = "[.ts/.tsx/.js/.jsx] Bounded call graph; rows=node_fields/edge_fields; edge=[caller_idx,callee_idx]."
     )]
     async fn get_call_hierarchy(
         &self,
@@ -671,7 +667,7 @@ impl SymbolPeekServer {
 #[tool_handler(
     name = "symbolpeek",
     version = "0.1.0",
-    instructions = "Minimal TS/JS/Rust symbol context. Rust is syntax-only; get_capabilities lists support levels."
+    instructions = "Minimal TS/JS/Rust/Python/Java/Go symbol context. get_capabilities lists exact support levels."
 )]
 impl ServerHandler for SymbolPeekServer {
     /// Replaces the `#[tool_handler]`-generated body so each call can be timed.
