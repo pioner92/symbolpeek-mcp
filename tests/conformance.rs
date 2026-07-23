@@ -307,7 +307,10 @@ fn go_standard_library_corpus_reports_only_readable_names() {
 fn python_standard_library_corpus_reports_only_readable_names() {
     let Some(stdlib) = toolchain_corpus_dir(
         "python3",
-        &["-c", "import sysconfig; print(sysconfig.get_path('stdlib'))"],
+        &[
+            "-c",
+            "import sysconfig; print(sysconfig.get_path('stdlib'))",
+        ],
     ) else {
         eprintln!("skipping Python corpus: no `python3` on PATH");
         return;
@@ -367,7 +370,10 @@ fn assert_corpus_reads_back(
 /// the toolchain is absent or the reported directory does not exist — the same
 /// graceful skip the TypeScript standard-library corpus uses.
 fn toolchain_corpus_dir(program: &str, args: &[&str]) -> Option<PathBuf> {
-    let output = std::process::Command::new(program).args(args).output().ok()?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

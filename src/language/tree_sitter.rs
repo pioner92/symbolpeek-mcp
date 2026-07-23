@@ -278,7 +278,10 @@ impl SyntaxIndex {
             for (id, definition) in self.definitions.iter().enumerate() {
                 let key = (definition.parent, occurrence_base(&definition.display_name));
                 if let Some(first) = seen.insert(key, id) {
-                    duplicates.entry(key).or_insert_with(|| vec![first]).push(id);
+                    duplicates
+                        .entry(key)
+                        .or_insert_with(|| vec![first])
+                        .push(id);
                 }
             }
             duplicates.into_values().collect()
