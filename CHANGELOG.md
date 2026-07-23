@@ -3,7 +3,7 @@
 All notable changes to SymbolPeek are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.4.2] — 2026-07-23
 
 ### Added
 
@@ -190,6 +190,7 @@ All notable changes to SymbolPeek are documented here. This project follows
 - Barrel files now emit re-export symbols from `list_symbols`.
 - Nested bare-name reads, bounded call hierarchy, and JSX/memo caller detection.
 
+[0.4.2]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.4.2
 [0.4.1]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.4.1
 [0.4.0]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.4.0
 [0.3.1]: https://github.com/pioner92/symbolpeek-mcp/releases/tag/v0.3.1
