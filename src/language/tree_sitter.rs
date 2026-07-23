@@ -182,10 +182,6 @@ impl SyntaxIndex {
             .filter(|(_, count)| *count > 1)
             .map(|(name, _)| name.to_owned())
             .collect::<Vec<_>>();
-        if duplicated.is_empty() {
-            return;
-        }
-
         for name in duplicated {
             let roots = self
                 .definitions
@@ -231,6 +227,108 @@ impl SyntaxIndex {
                 }
             }
         }
+
+        // The pass above only fires on duplicate qualified names, and even then
+        // is order-sensitive: a nested duplicate leaf can lose its root to a
+        // parent's prefix rewrite, `@line:column` cannot part two declarations
+        // sharing one source position (`var _, _ = …`), and a top-level `name`
+        // can still collide with another definition's leaf `display_name` (a Go
+        // method `Package.foo` shown as `foo` beside a top-level `const foo`).
+        // These sweeps close the reachability invariant unconditionally — no two
+        // definitions share a `name`, no two siblings share a `display_name` —
+        // and cost only a borrow-only scan when, as usual, nothing collides.
+        self.enforce_unique_names();
+        self.enforce_unique_sibling_display_names();
+    }
+
+    /// Guarantees every definition's `name` is distinct, so a name reported by
+    /// one tool always reads back to the same declaration. The detection scan
+    /// borrows and allocates nothing until an actual collision is found.
+    fn enforce_unique_names(&mut self) {
+        let groups: Vec<Vec<usize>> = {
+            let mut seen: HashMap<&str, usize> = HashMap::new();
+            let mut duplicates: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (id, definition) in self.definitions.iter().enumerate() {
+                if let Some(first) = seen.insert(definition.name.as_str(), id) {
+                    duplicates
+                        .entry(definition.name.as_str())
+                        .or_insert_with(|| vec![first])
+                        .push(id);
+                }
+            }
+            duplicates.into_values().collect()
+        };
+        for group in groups {
+            for (id, selector) in self.selectors_for(&group, |definition| definition.name.clone()) {
+                self.definitions[id].name = selector;
+            }
+        }
+    }
+
+    /// Same guarantee scoped to sibling `display_name`s, because the outline
+    /// path a consumer composes is built from them, not from `name`. Grouping is
+    /// by the display's occurrence base, not the raw string: the resolver's
+    /// `by_base` channel strips selectors, so a still-bare `_` is ambiguous
+    /// against a sibling already disambiguated to `_@69:2` and must be selected
+    /// too — even though the two raw strings differ.
+    fn enforce_unique_sibling_display_names(&mut self) {
+        let groups: Vec<Vec<usize>> = {
+            let mut seen: HashMap<(Option<usize>, &str), usize> = HashMap::new();
+            let mut duplicates: HashMap<(Option<usize>, &str), Vec<usize>> = HashMap::new();
+            for (id, definition) in self.definitions.iter().enumerate() {
+                let key = (definition.parent, occurrence_base(&definition.display_name));
+                if let Some(first) = seen.insert(key, id) {
+                    duplicates.entry(key).or_insert_with(|| vec![first]).push(id);
+                }
+            }
+            duplicates.into_values().collect()
+        };
+        for group in groups {
+            for (id, selector) in
+                self.selectors_for(&group, |definition| definition.display_name.clone())
+            {
+                self.definitions[id].display_name = selector;
+            }
+        }
+    }
+
+    /// Builds a distinct selector for each id in a collision group, stripping
+    /// any existing selector first so we never stack `@pos@pos`.
+    fn selectors_for(
+        &self,
+        ids: &[usize],
+        base_of: impl Fn(&SyntaxDefinition) -> String,
+    ) -> Vec<(usize, String)> {
+        let mut ordered = ids.to_vec();
+        ordered.sort_by_key(|&id| {
+            let definition = &self.definitions[id];
+            (definition.start_byte, definition.end_byte, id)
+        });
+        let mut position_totals: HashMap<(usize, usize), usize> = HashMap::new();
+        for &id in &ordered {
+            let definition = &self.definitions[id];
+            *position_totals
+                .entry((definition.lines.start, definition.start_column))
+                .or_default() += 1;
+        }
+        let mut position_seen: HashMap<(usize, usize), usize> = HashMap::new();
+        ordered
+            .iter()
+            .map(|&id| {
+                let definition = &self.definitions[id];
+                let position = (definition.lines.start, definition.start_column);
+                let base = base_of(definition);
+                let stem = occurrence_base(&base).to_owned();
+                let selector = if position_totals[&position] > 1 {
+                    let ordinal = position_seen.entry(position).or_default();
+                    *ordinal += 1;
+                    format!("{stem}@{}:{}#{}", position.0, position.1, *ordinal)
+                } else {
+                    format!("{stem}@{}:{}", position.0, position.1)
+                };
+                (id, selector)
+            })
+            .collect()
     }
 
     /// The dotted path an outline consumer would compose for this definition.
@@ -993,18 +1091,27 @@ fn ambiguity_labels(definitions: Vec<&SyntaxDefinition>) -> Vec<String> {
         .collect()
 }
 
-/// A qualified name without its `@line:column` occurrence selector.
+/// A qualified name without its `@line:column` occurrence selector. The
+/// position may carry a trailing `#ordinal` when several declarations share one
+/// source position (`var _, _ = …`); that ordinal is stripped along with it.
 fn occurrence_base(name: &str) -> &str {
     let Some((base, occurrence)) = name.rsplit_once('@') else {
         return name;
     };
-    let mut parts = occurrence.split(':');
-    let valid = matches!((parts.next(), parts.next(), parts.next()), (Some(line), Some(column), None)
+    let (position, ordinal_ok) = match occurrence.split_once('#') {
+        Some((position, ordinal)) => (
+            position,
+            !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit()),
+        ),
+        None => (occurrence, true),
+    };
+    let mut parts = position.split(':');
+    let position_ok = matches!((parts.next(), parts.next(), parts.next()), (Some(line), Some(column), None)
         if !line.is_empty()
             && !column.is_empty()
             && line.bytes().all(|byte| byte.is_ascii_digit())
             && column.bytes().all(|byte| byte.is_ascii_digit()));
-    if valid {
+    if position_ok && ordinal_ok {
         base
     } else {
         name

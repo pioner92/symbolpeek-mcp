@@ -226,7 +226,7 @@ fn curated_real_world_corpus_obeys_cross_tool_contracts() {
 #[test]
 fn every_language_reports_only_readable_names() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let cases: [(&dyn LanguageAdapter, &str, &str); 8] = [
+    let cases: [(&dyn LanguageAdapter, &str, &str); 10] = [
         // Kept out of `fixtures/rust`, whose contents an end-to-end workspace
         // search counts.
         (&RustAdapter::new(), "reachability/cfg_twins.rs", "rs"),
@@ -236,7 +236,14 @@ fn every_language_reports_only_readable_names() {
             "python/conditional_definitions.py",
             "py",
         ),
+        // A class rebinding plus a property getter/setter pair — nested
+        // duplicate leaves that a disambiguated parent could strand.
+        (&PythonAdapter::new(), "python/property_pairs.py", "py"),
         (&GoAdapter::new(), "go/duplicate_init.go", "go"),
+        // Declarations sharing one source position (`var _, _ = …`), a method
+        // leaf colliding with a top-level const, and a bare blank colliding
+        // with disambiguated blank siblings.
+        (&GoAdapter::new(), "go/blank_collisions.go", "go"),
         (&JavaAdapter::new(), "java/Overloads.java", "java"),
         (&MarkdownAdapter::new(), "markdown/handbook.md", "md"),
         (&MarkdownAdapter::new(), "markdown/setext.md", "md"),
@@ -270,18 +277,102 @@ fn own_rust_sources_report_only_readable_names() {
     }
 }
 
+/// The Go standard library is thousands of files of real third-party Go —
+/// generated unicode tables, `//go:build`-gated twins, several `init`s per
+/// package — none of it written to satisfy this indexer. Skips gracefully when
+/// no Go toolchain is installed, exactly like the TypeScript corpus.
+#[test]
+fn go_standard_library_corpus_reports_only_readable_names() {
+    let Some(goroot) = toolchain_corpus_dir("go", &["env", "GOROOT"]) else {
+        eprintln!("skipping Go corpus: no `go` toolchain on PATH");
+        return;
+    };
+    let root = goroot.join("src");
+    if !root.is_dir() {
+        eprintln!("skipping Go corpus: {} is missing", root.display());
+        return;
+    }
+    let checked = assert_corpus_reads_back(&GoAdapter::new(), &root, "go");
+    assert!(
+        checked > 500,
+        "expected the Go standard library, checked only {checked} files in {}",
+        root.display()
+    );
+}
+
+/// The Python standard library exercises the control-flow branch that regressed
+/// (`def`/`class` nested in `if`/`try`/`with`), across code nobody wrote for the
+/// indexer. Skips gracefully when no `python3` is installed.
+#[test]
+fn python_standard_library_corpus_reports_only_readable_names() {
+    let Some(stdlib) = toolchain_corpus_dir(
+        "python3",
+        &["-c", "import sysconfig; print(sysconfig.get_path('stdlib'))"],
+    ) else {
+        eprintln!("skipping Python corpus: no `python3` on PATH");
+        return;
+    };
+    let checked = assert_corpus_reads_back(&PythonAdapter::new(), &stdlib, "py");
+    assert!(
+        checked > 200,
+        "expected the Python standard library, checked only {checked} files in {}",
+        stdlib.display()
+    );
+}
+
 fn collect_rust_sources(directory: &PathBuf, output: &mut Vec<PathBuf>) {
+    collect_sources(directory, "rs", output);
+}
+
+fn collect_sources(directory: &PathBuf, extension: &str, output: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
-            collect_rust_sources(&path, output);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            collect_sources(&path, extension, output);
+        } else if path.extension().is_some_and(|found| found == extension) {
             output.push(path);
         }
     }
+}
+
+/// Runs the reachability contract over every source file under `root`, skipping
+/// files that are not valid UTF-8 (some standard libraries ship such fixtures).
+/// Returns the number of files actually checked so the caller can assert the
+/// corpus was real and not silently empty.
+fn assert_corpus_reads_back(
+    adapter: &dyn LanguageAdapter,
+    root: &PathBuf,
+    extension: &str,
+) -> usize {
+    let mut sources = Vec::new();
+    collect_sources(root, extension, &mut sources);
+    sources.sort();
+    let mut checked = 0;
+    for path in sources {
+        if std::fs::read_to_string(&path).is_err() {
+            continue;
+        }
+        assert_outline_reads_back(adapter, &path, extension)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        checked += 1;
+    }
+    checked
+}
+
+/// Resolves a toolchain-provided corpus directory by running `program args...`
+/// and treating its stdout as a path. Returns `None` (and the caller skips) when
+/// the toolchain is absent or the reported directory does not exist — the same
+/// graceful skip the TypeScript standard-library corpus uses.
+fn toolchain_corpus_dir(program: &str, args: &[&str]) -> Option<PathBuf> {
+    let output = std::process::Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+    path.is_dir().then_some(path)
 }
 
 /// Hand-written fixtures only cover shapes somebody thought to model, which is

@@ -44,6 +44,18 @@ All notable changes to SymbolPeek are documented here. This project follows
 - Composing a path from an outline now resolves for Rust impl blocks:
   `impl Client.send` reaches the declaration whose canonical name is
   `Client.send`.
+- **The occurrence selector was not always unique, so some names the outline
+  reported still could not be read back.** Running the indexer over the Go and
+  Python standard libraries surfaced three cases the earlier disambiguation
+  missed: declarations sharing one source position (`var _, _ = …`, both blanks
+  anchored to the spec), a property getter/setter pair stranded when their
+  enclosing class was itself disambiguated, and a top-level name whose leaf
+  display collided with another declaration (a Go method shown as `foo` beside a
+  top-level `const foo`). A final uniqueness pass now closes the invariant
+  unconditionally — every `name` distinct, every sibling `display_name` distinct,
+  with a `#ordinal` when declarations genuinely share a position — and the Go and
+  Python standard libraries are exercised as real-world corpora in the test
+  suite.
 
 ### Changed
 
